@@ -1,10 +1,11 @@
 # FORGE: THE MASTER PLAN
 
-> Source note (2026-11-24). This is the owner's plan text. The source paste
-> was damaged in three places: part of the Ring diagram and the start of
-> Theorem 1 are missing, and the last sentence is cut. These places are marked
-> `[LOST IN PASTE]`. Copy artifacts (letters split one per line, doubled
-> arrows) were repaired. No other words were changed.
+> Source note (2026-11-24). This is the owner's plan text. Copy artifacts
+> (letters split one per line, doubled arrows) and the four places damaged in
+> the first paste were repaired from the owner's follow-up paste. Section 6
+> was appended from a second follow-up paste; one spliced phrase in Step 6
+> (`posile`) was repaired to `possible).` + `Compile` with owner approval. No
+> other words were changed.
 >
 > Status: `end_to_end=false`. See `STATUS.md`. Nothing in this plan is proved yet.
 
@@ -51,7 +52,7 @@ drops to false, CI blocks merge.
 ```text
 forge/
 ├── kernel/              # [RING 0 - PROVED] ~400 LOC Pancake/CakeML + HOL4 M1-B & Silver RTL proofs
-├── spec-compiler/       # [RING 1 - PROVED] HOL4 Bijective EnglikeML compiler
+├── spec-compiler/       # [RING 1 - PROVED] HOL4 Bijective English <-> ForgeSpec -> CakeML compiler
 ├── relay/               # [STATELESS EDGE]  ~35 LOC auditable capability-token -> Stripe/LLM gateway
 ├── sdk/                 # [RING 2 - UNTRUSTED] `npx forge` CLI, TS/Python SDK, SQLite Merkle tree,
 │                        #                      Z3 Spec-Clearing Quiz, TouchID/FIDO2 UI, Cursor MCP
@@ -68,6 +69,8 @@ forge/
                    │    via TouchID / FIDO2 Ed25519 / $25 OLED Hardware Stick
                    ▼
 ╔═══════════════════════════════════════════════════════════════════════════╗
+║ TRUSTED FORGE BOX (`end_to_end=true` from Canonical English -> Silicon)   ║
+║                                                                           ║
 ║  [Ring 1: Verified Spec Compiler (HOL4)]                                  ║
 ║   • Verified `decode_english(spec.lock)` <-> `ForgeSpec AST` (Bijective)  ║
 ║   • Built-in checkers: Conservation + Merkle Finality + Farkas Optimality ║
@@ -91,12 +94,20 @@ forge/
 └─────────────────────────────────────────┘   └─────────────────────────────┘
 ```
 
-`[LOST IN PASTE]`: the rest of section 1, the heading of section 2, and the
-start of Theorem 1. The surviving end of Theorem 1 reads:
+## 2. The Four Mechanized HOL4 Theorems
 
-> …ambiguity and zero hidden clauses. Not a single boundary condition, overflow
-> rule, or auth bypass can exist in the compiled spec unless it appears visibly
-> in the plain-English text signed by the human.
+Your entire assurance story rests on four machine-checked theorems in HOL4 that
+compose into one unbroken chain:
+
+**Theorem 1 — Canonical English Bijection (Closes S1 Cognitively):**
+
+```text
+∀S. decode_en(encode_en(S)) = Some(S)  ∧  (decode_en(E) = Some(S) ⟹ encode_en(S) = E)
+```
+
+Meaning: Zero ambiguity and zero hidden clauses. Not a single boundary
+condition, overflow rule, or auth bypass can exist in the compiled spec unless
+it appears visibly in the plain-English text signed by the human.
 
 **Theorem 2 — ForgeSpec & Certificate Soundness (Closes Domain Semantics):**
 
@@ -125,7 +136,7 @@ binary/bitstream bytes refine the HOL4 kernel transition function.
 - **Prompt in Messy English:** User tells Cursor/Claude: "Add user credits, promo redemptions, and Stripe refunds, max $200/day."
 - **Interactive Spec Clearing (`npx forge clear`):** Untrusted Claude + Z3 translates the prompt into Canonical English and asks 2–3 multiple-choice dollar questions to clear edge cases ("Can promo credits be refunded for cash? [No / Yes]").
 - **Sign Plain English (`npx forge approve`):** User reads the 12-line Canonical English card and taps TouchID / YubiKey (Ed25519) to lock `spec.lock`.
-- **Live MCP Bug-Slayer (`npx forge dev`):** While Cursor vibe-codes the app, Forge's MCP server n tests at it; when Cursor's async handler races, Forge hands the exact Merkle conflict back to Cursor so it fixes its own code automatically. *(Source text: "n tests"; one or more words may be missing.)*
+- **Live MCP Bug-Slayer (`npx forge dev`):** While Cursor vibe-codes the app, Forge's MCP server fires concurrent race-condition tests at it; when Cursor's async handler races, Forge hands the exact Merkle conflict back to Cursor so it fixes its own code automatically.
 - **Zero-Key Deployment:** `STRIPE_SECRET_KEY` goes into `relay/`, never into the vibe-coded app. Even if the vibe-coded app gets prompt-injected or rooted in production, the founder cannot lose more than the signed spec permits.
 
 ### Experience B: For High-Stakes AI Infrastructure ("More Than an Airlock")
@@ -193,4 +204,76 @@ Launch Live With Three Undeniable Demos:
 
 1. Rename `mack-dot/forge` → `mack-dot/forge-lab`.
 2. Initialize the new `mack-dot/forge` with `MASTER_PLAN.md` and the 4 folders (`kernel/`, `spec-compiler/`, `relay/`, `sdk/`).
-3. Start Milestone 1 exclusively: get a 60-line Pancake/CakeML ARM64 binary building in CI with the two M1-B machine premises fixed and `end_to_end=true` green on Commit #1. Do not write a single line of SDK or wrapper code until that green light is locked i `[LOST IN PASTE]`
+3. Start Milestone 1 exclusively: get a 60-line Pancake/CakeML ARM64 binary building in CI with the two M1-B machine premises fixed and `end_to_end=true` green on Commit #1. Do not write a single line of SDK or wrapper code until that green light is locked in.
+
+## 6. The 8-Step Build Order (Feature Parity)
+
+> Repo note (2026-11-24): In this repository, the Step 1 gate is
+> `scripts/iron_law.py` (with `scripts/tests/test_iron_law.py` and
+> `.github/workflows/iron-law.yml`), not `scripts/verify_e2e.sh`. It reports
+> `end_to_end=false` until Step 2 (Milestone 1) is proved. `scripts/iron_law.py`
+> currently checks `\bcheat\b` only; `mk_thm`, `new_axiom`, and HOL oracle tags
+> remain to be added with negative controls.
+
+Here is the exact 8-step build order inside `forge-iron` from empty folder to
+full feature parity—where every step stays `end_to_end=true` before you move to
+the next one:
+
+### Step 1: Set Up the Skeleton & Proof Gate (Day 1)
+
+- Create the 4 folders: `kernel/`, `spec-compiler/`, `relay/`, `sdk/`, plus `scripts/verify_e2e.sh`.
+- Write the CI gate script (`verify_e2e.sh`):
+  - Fails if `cheat`, `mk_thm`, or `new_axiom` appears anywhere in `kernel/` or `spec-compiler/`.
+  - Runs `Holmake` to replay all HOL4 proofs from scratch.
+  - Extracts the verified machine-code bytes from HOL4 and checks exact byte equality against the compiled `forge-kernel` binary.
+- **Done when:** Your repo structure and verification script exist and run cleanly.
+
+### Step 2: Connect the Bridge — Fix M1-B on a Tiny Counter (`kernel/`)
+
+- Port only your HOL4/CakeML ARM64 build from old `forge` into `kernel/`.
+- Write a tiny 30-line CakeML/Pancake loop: Read 16 raw bytes (`req_seq`, `amount`), check `req_seq == seq + 1` and `spent + amount <= cap`, write 16 raw bytes back.
+- Fix the two false ARM64 premises: Write a ~25-line raw Linux ARM64 syscall entry shim (`read`, `write`, `pwrite64`, `fdatasync`, `exit` + exact `mmap` alignment, looping `read` on partial bytes) so every HOL4 machine assumption is literally true of the real OS process.
+- **Unlocks:** Genuine `end_to_end=true` from HOL4 down to an executing ARM64 binary.
+
+### Step 3: Add SHA-256, Crash-Safe Storage, & the API `relay/` (`kernel/` + `relay/`)
+
+- In `kernel/`: Add verified allocation-free SHA-256 + HMAC-SHA256 (~80 lines) and persist the 160-byte state across two alternating raw 256-byte slots (Slot A / Slot B) with `last_token` cached for crash-safe retries (permanently killing your E1/E2 duplicate-effect bugs).
+- In `relay/`: Write the ~35-line stateless HTTP gateway that holds `STRIPE_SECRET_KEY` / `OPENAI_API_KEY`, verifies the kernel's HMAC-SHA256 token, sets `Idempotency-Key: seq`, and forwards the API call.
+- **Unlocks:** Airlock & hard LLM/Stripe spending caps working end-to-end.
+
+### Step 4: Add the 32-Byte Sparse Merkle State Engine (`kernel/` + `sdk/`)
+
+- In `kernel/`: Add the 32-level Merkle proof checker (~20 lines calling SHA-256) so the kernel can verify and update arbitrary key-value records inside its single 32-byte `state_root`.
+- In `sdk/`: Write the local SQLite helper that stores the full table rows and automatically generates the 32 sibling hashes for every request.
+- **Unlocks:** Billions of accounts, order IDs, and booking slots with zero database code inside the TCB.
+
+### Step 5: Lock Human Spec Approval at Boot (S1 Closed) (`kernel/` + `sdk/`)
+
+- In `kernel/`: Add verified Ed25519 signature verification on startup so `forge-kernel` refuses to boot unless `spec.lock` is signed by the human owner's public key.
+- In `sdk/`: Add `npx forge approve` to sign `spec.lock` using a hardware key / YubiKey / TouchID passkey.
+- **Unlocks:** Unbypassable governance (S1, E2, E4) without trusting GitHub branch protection or repo admins.
+
+### Step 6: Build the Bijective Plain-English ForgeSpec Compiler (`spec-compiler/`)
+
+- In `spec-compiler/` (HOL4):
+  - Write `decode_english` ↔ `encode_english` and prove the 1-to-1 Round-Trip Theorem (zero hidden rules possible).
+  - Compile ForgeSpec rules (integer balances, conservation sums, caps, tenant auth, Merkle state transitions) straight into CakeML `Guest::step` code and link with `kernel/`.
+- Port 3 domains as 15-line Plain-English specs:
+  - Refunds (at-most-once finality)
+  - Ledger / Escrow (double-entry money conservation)
+  - Booking (conflict-free slot reservation)
+- **Unlocks:** Refunds, Ledger, Escrow, and Booking all running at `end_to_end=true`.
+
+### Step 7: Port FarkasCert Optimality & Multi-Party Clearing (`spec-compiler/` + `sdk/`)
+
+- In `spec-compiler/` (HOL4): Port your FarkasCert linear duality checker so specs can require zero optimality gap alongside balance conservation.
+- In `sdk/`: Add automatic scipy/HiGHS dual-price extraction so untrusted Python/LLM solvers attach optimality witnesses automatically.
+- **Unlocks:** Provably optimal multi-party Clearing & LP resource allocation at `end_to_end=true`.
+
+### Step 8: Polish the Developer & Vibe-Coder Experience (`sdk/` + Optional Silicon)
+
+- In `sdk/`:
+  - Expose clean Python (`sdk/py`) and TypeScript (`sdk/ts`) wrappers.
+  - Expose the MCP Server (`npx forge mcp`) so Claude Code and Cursor use Forge natively while vibe-coding.
+  - Add `npx forge clear` (the untrusted Z3 + Claude edge-case quiz that turns messy prompts into Canonical English before signing).
+- **Optional Finale ("Ultra End-to-End"):** Compile the exact same HOL4 theorem through CakeML's Silver backend onto a $25 FPGA USB stick.
