@@ -1,0 +1,20 @@
+name: iron-law
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  gate-self-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/tests/test_iron_law.py
+  end-to-end:
+    # Red until Milestone 1 is really proved. Do not mark this job optional.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # Milestone 1 adds the pinned HOL4 + CakeML install here.
+      - run: python3 scripts/iron_law.py
