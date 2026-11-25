@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Pure-Python ELF64 AArch64 structural and zero-gap byte-equivalence verifier.
 
-Used by scripts/iron_law.py to bind HOL4-extracted machine bytes directly
-to the compiled static non-PIE Linux ARM64 ELF binary.
+Binds HOL4-extracted machine bytes AND exact HOL4 layout virtual addresses
+(`theorem_layout.txt`) directly to the compiled static non-PIE Linux ARM64 ELF
+PT_LOAD segments (not trusting .symtab alone).
 """
 from __future__ import annotations
 
@@ -30,9 +31,56 @@ LO55_LIMIT = 1 << 55
 ARM64_NOP = b"\x1f\x20\x03\xd5"
 ARM64_UDF0 = b"\x00\x00\x00\x00"
 
+REQUIRED_LAYOUT_KEYS = (
+    "veneers_base",
+    "ffirecv16_veneer",
+    "ffisend16_veneer",
+    "install_veneer",
+    "exit_veneer",
+    "cake_main",
+    "cb_begin",
+    "cb_end",
+    "cbspace",
+    "shim_base",
+    "ffirecv16",
+    "ffisend16",
+    "cml_exit",
+    "cml_install",
+    "shim_end",
+    "cml_heap",
+    "cml_stack",
+    "cml_stackend",
+    "cake_bitmaps",
+    "bm_buf_end",
+    "rx_tmp",
+    "forge_heap",
+    "forge_stack",
+    "forge_stackend",
+)
+
 
 class ElfError(ValueError):
-    """Raised when an ELF violates structural or byte-equivalence invariants."""
+    """Raised when an ELF violates structural, layout, or byte-equivalence invariants."""
+
+
+def parse_layout(text: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if k in out:
+            raise ElfError(f"LAYOUT_DUPLICATE_KEY ({k})")
+        try:
+            out[k] = int(v, 0)
+        except ValueError as exc:
+            raise ElfError(f"LAYOUT_BAD_INT ({k}={v})") from exc
+    missing = [k for k in REQUIRED_LAYOUT_KEYS if k not in out]
+    if missing:
+        raise ElfError("LAYOUT_MISSING_KEYS (" + ",".join(missing) + ")")
+    return out
 
 
 def parse_elf64(data: bytes) -> dict:
@@ -80,6 +128,8 @@ def parse_elf64(data: bytes) -> dict:
         if p_type == PT_LOAD:
             if (p_flags & PF_W) and (p_flags & PF_X):
                 raise ElfError(f"ELF_WX_VIOLATION (vaddr=0x{p_vaddr:x})")
+            if p_memsz < p_filesz:
+                raise ElfError(f"ELF_MEMSZ_LT_FILESZ (vaddr=0x{p_vaddr:x})")
             if p_vaddr + p_memsz >= LO55_LIMIT:
                 raise ElfError(f"ELF_VADDR_ABOVE_LO55 (end=0x{p_vaddr + p_memsz:x})")
             if p_offset + p_filesz > len(data):
@@ -98,7 +148,15 @@ def parse_elf64(data: bytes) -> dict:
     if not phdrs:
         raise ElfError("ELF_NO_PT_LOAD")
 
-    # Parse sections + .symtab
+    # Verify PT_LOAD virtual address ranges are pairwise disjoint.
+    sorted_loads = sorted(phdrs, key=lambda s: s["vaddr"])
+    for a, b in zip(sorted_loads, sorted_loads[1:]):
+        if a["vaddr"] + a["memsz"] > b["vaddr"]:
+            raise ElfError(
+                f"ELF_OVERLAPPING_PT_LOAD (0x{a['vaddr']:x}..0x{a['vaddr']+a['memsz']:x} vs 0x{b['vaddr']:x})"
+            )
+
+    # Parse sections + .symtab safely
     shdrs = []
     for i in range(e_shnum):
         off = e_shoff + i * e_shentsize
@@ -121,7 +179,13 @@ def parse_elf64(data: bytes) -> dict:
     syms: dict[str, int] = {}
     for sh in shdrs:
         if sh["type"] == SHT_SYMTAB and sh["entsize"] >= 24:
+            if sh["link"] >= len(shdrs):
+                raise ElfError(f"ELF_BAD_SYMTAB_LINK (link={sh['link']})")
             strtab = shdrs[sh["link"]]
+            if strtab["offset"] + strtab["size"] > len(data):
+                raise ElfError("ELF_TRUNCATED_STRTAB")
+            if sh["offset"] + sh["size"] > len(data):
+                raise ElfError("ELF_TRUNCATED_SYMTAB")
             str_bytes = data[strtab["offset"] : strtab["offset"] + strtab["size"]]
             count = sh["size"] // sh["entsize"]
             for j in range(count):
@@ -135,17 +199,20 @@ def parse_elf64(data: bytes) -> dict:
                         "utf-8", errors="replace"
                     )
                     if name:
+                        if name in syms and syms[name] != st_value and not name.startswith("$"):
+                            raise ElfError(
+                                f"ELF_DUPLICATE_SYMBOL ({name}: 0x{syms[name]:x} vs 0x{st_value:x})"
+                            )
                         syms[name] = st_value
 
     return {"entry": e_entry, "loads": phdrs, "syms": syms}
 
 
-def read_vaddr(data: bytes, loads: list[dict], vaddr: int, length: int) -> bytes:
-    for seg in loads:
-        if seg["vaddr"] <= vaddr and vaddr + length <= seg["vaddr"] + seg["filesz"]:
-            foff = seg["offset"] + (vaddr - seg["vaddr"])
-            return data[foff : foff + length]
-    raise ElfError(f"ELF_VADDR_UNMAPPED (0x{vaddr:x}+{length})")
+def read_seg_vaddr(data: bytes, seg: dict, vaddr: int, length: int) -> bytes:
+    if seg["vaddr"] <= vaddr and vaddr + length <= seg["vaddr"] + seg["filesz"]:
+        foff = seg["offset"] + (vaddr - seg["vaddr"])
+        return data[foff : foff + length]
+    raise ElfError(f"ELF_VADDR_UNMAPPED_IN_SEG (0x{vaddr:x}+{length})")
 
 
 def check_padding_only(buf: bytes) -> None:
@@ -165,98 +232,149 @@ def verify_kernel_elf(
     theorem_code: bytes,
     theorem_shim: bytes,
     theorem_data: bytes,
+    layout: dict[str, int],
 ) -> dict:
+    for k in REQUIRED_LAYOUT_KEYS:
+        if k not in layout:
+            raise ElfError(f"LAYOUT_MISSING_KEY ({k})")
+
     data = elf_path.read_bytes()
     elf = parse_elf64(data)
     loads = elf["loads"]
     syms = elf["syms"]
 
-    req_syms = [
-        "_start",
-        "cake_text_begin",
-        "cml_main",
-        "cake_main",
-        "cake_codebuffer_begin",
-        "cake_codebuffer_end",
-        "ffirecv16",
-        "ffisend16",
-        "cml_exit",
-        "cml_install",
-        "forge_shim_end",
-        "cake_bitmaps",
-        "forge_heap",
-        "forge_stack",
-        "forge_stackend",
-    ]
-    missing = [s for s in req_syms if s not in syms]
-    if missing:
-        raise ElfError("ELF_MISSING_SYMBOLS (" + ",".join(missing) + ")")
+    # Validate internal arithmetic consistency of HOL4 layout constants.
+    t_begin = layout["veneers_base"]
+    c_main = layout["cake_main"]
+    cb_begin = layout["cb_begin"]
+    cb_end = layout["cb_end"]
+    cbspace = layout["cbspace"]
+    s_start = layout["shim_base"]
+    s_end = layout["shim_end"]
+    cml_heap = layout["cml_heap"]
+    bm_begin = layout["cake_bitmaps"]
+    bm_end = layout["bm_buf_end"]
+    rx_tmp = layout["rx_tmp"]
+    heap = layout["forge_heap"]
+    stk = layout["forge_stack"]
+    stk_end = layout["forge_stackend"]
 
-    if elf["entry"] != syms["_start"]:
-        raise ElfError(f"ELF_ENTRY_MISMATCH (0x{elf['entry']:x} != 0x{syms['_start']:x})")
+    if not (t_begin < c_main < cb_begin <= cb_end <= s_start < s_end < LO55_LIMIT):
+        raise ElfError("LAYOUT_EXEC_ORDER_INVALID")
+    if cb_end - cb_begin != cbspace:
+        raise ElfError(f"LAYOUT_CBSPACE_MISMATCH (cb_end-cb_begin={cb_end-cb_begin} != {cbspace})")
+    if c_main - t_begin != len(theorem_veneers):
+        raise ElfError(f"LAYOUT_VENEERS_LEN_MISMATCH ({c_main-t_begin} != {len(theorem_veneers)})")
+    if cb_begin - c_main != len(theorem_code):
+        raise ElfError(f"LAYOUT_CODE_LEN_MISMATCH ({cb_begin-c_main} != {len(theorem_code)})")
+    if s_end - s_start != len(theorem_shim):
+        raise ElfError(f"LAYOUT_SHIM_LEN_MISMATCH ({s_end-s_start} != {len(theorem_shim)})")
+    if bm_end - bm_begin != len(theorem_data):
+        raise ElfError(f"LAYOUT_DATA_LEN_MISMATCH ({bm_end-bm_begin} != {len(theorem_data)})")
 
+    # 1. Exact ELF entry point equals HOL4 FORGE_SHIM_BASE (_start)
+    if elf["entry"] != s_start:
+        raise ElfError(f"ELF_ENTRY_MISMATCH (elf=0x{elf['entry']:x} hol4=0x{s_start:x})")
+
+    # 2. Exact single RX PT_LOAD segment at [FORGE_VENEERS_BASE .. FORGE_SHIM_END)
     exec_segs = [seg for seg in loads if seg["flags"] & PF_X]
     if len(exec_segs) != 1:
         raise ElfError(f"ELF_EXPECTED_ONE_EXEC_SEGMENT (got {len(exec_segs)})")
     xseg = exec_segs[0]
-    x_start = xseg["vaddr"]
+    if (xseg["flags"] & (PF_R | PF_X)) != (PF_R | PF_X):
+        raise ElfError(f"ELF_EXEC_FLAGS_INVALID (flags=0x{xseg['flags']:x})")
+    if xseg["vaddr"] != t_begin:
+        raise ElfError(f"ELF_EXEC_VADDR_MISMATCH (elf=0x{xseg['vaddr']:x} hol4=0x{t_begin:x})")
+    if xseg["memsz"] != xseg["filesz"]:
+        raise ElfError(f"ELF_EXEC_MEMSZ_NE_FILESZ (memsz=0x{xseg['memsz']:x} filesz=0x{xseg['filesz']:x})")
     x_end = xseg["vaddr"] + xseg["filesz"]
+    if x_end != s_end:
+        raise ElfError(f"ELF_EXEC_END_MISMATCH (elf=0x{x_end:x} hol4=0x{s_end:x})")
 
-    # Zero-gap PF_X coverage check:
-    # [x_start == cake_text_begin .. cake_main)       == theorem_veneers
-    # [cake_main .. cake_codebuffer_begin)            == theorem_code
-    # [cake_codebuffer_begin .. _start)               == pure UDF#0 / NOP padding only
-    # [_start .. forge_shim_end == x_end)             == theorem_shim
-    t_begin = syms["cake_text_begin"]
-    c_main = syms["cake_main"]
-    cb_begin = syms["cake_codebuffer_begin"]
-    s_start = syms["_start"]
-    s_end = syms["forge_shim_end"]
-
-    if t_begin != x_start:
-        raise ElfError(f"ELF_EXEC_LEADING_GAP (x_start=0x{x_start:x} cake_text_begin=0x{t_begin:x})")
-    if s_end != x_end:
-        raise ElfError(f"ELF_EXEC_TRAILING_GAP (forge_shim_end=0x{s_end:x} x_end=0x{x_end:x})")
-    if not (t_begin < c_main < cb_begin <= s_start < s_end):
-        raise ElfError("ELF_EXEC_REGION_ORDER_INVALID")
-
-    elf_veneers = read_vaddr(data, loads, t_begin, c_main - t_begin)
+    # Zero-gap PF_X byte verification at EXACT HOL4 virtual addresses
+    elf_veneers = read_seg_vaddr(data, xseg, t_begin, len(theorem_veneers))
     if elf_veneers != theorem_veneers:
         raise ElfError(
             f"VENEERS_BYTE_MISMATCH (elf={len(elf_veneers)}B theorem={len(theorem_veneers)}B)"
         )
 
-    elf_code = read_vaddr(data, loads, c_main, cb_begin - c_main)
+    elf_code = read_seg_vaddr(data, xseg, c_main, len(theorem_code))
     if elf_code != theorem_code:
         raise ElfError(
             f"CODE_BYTE_MISMATCH (elf={len(elf_code)}B theorem={len(theorem_code)}B)"
         )
 
-    elf_pad = read_vaddr(data, loads, cb_begin, s_start - cb_begin)
+    elf_pad = read_seg_vaddr(data, xseg, cb_begin, s_start - cb_begin)
     check_padding_only(elf_pad)
 
-    elf_shim = read_vaddr(data, loads, s_start, s_end - s_start)
+    elf_shim = read_seg_vaddr(data, xseg, s_start, len(theorem_shim))
     if elf_shim != theorem_shim:
         raise ElfError(
             f"SHIM_BYTE_MISMATCH (elf={len(elf_shim)}B theorem={len(theorem_shim)}B)"
         )
 
-    # Verify cake_bitmaps in RW data segment
-    elf_data = read_vaddr(data, loads, syms["cake_bitmaps"], len(theorem_data))
+    # 3. Exact single RW PT_LOAD segment covering cml_heap..bm_buf_end (file) and ..forge_stackend (mem)
+    rw_segs = [seg for seg in loads if (seg["flags"] & PF_W) and not (seg["flags"] & PF_X)]
+    if len(rw_segs) != 1:
+        raise ElfError(f"ELF_EXPECTED_ONE_RW_SEGMENT (got {len(rw_segs)})")
+    dseg = rw_segs[0]
+    if (dseg["flags"] & (PF_R | PF_W)) != (PF_R | PF_W):
+        raise ElfError(f"ELF_RW_FLAGS_INVALID (flags=0x{dseg['flags']:x})")
+    if dseg["vaddr"] > cml_heap or dseg["vaddr"] + dseg["filesz"] < bm_end:
+        raise ElfError(
+            f"ELF_RW_DATA_UNMAPPED (seg=0x{dseg['vaddr']:x}..0x{dseg['vaddr']+dseg['filesz']:x} "
+            f"need=0x{cml_heap:x}..0x{bm_end:x})"
+        )
+    if dseg["vaddr"] + dseg["memsz"] < stk_end:
+        raise ElfError(
+            f"ELF_RW_HEAP_UNMAPPED (seg_end=0x{dseg['vaddr']+dseg['memsz']:x} "
+            f"need_stackend=0x{stk_end:x})"
+        )
+    if dseg["vaddr"] > rx_tmp or dseg["vaddr"] + dseg["memsz"] < rx_tmp + 16:
+        raise ElfError(f"ELF_RW_RX_TMP_UNMAPPED (rx_tmp=0x{rx_tmp:x})")
+
+    # Verify cake_bitmaps specifically inside the RW PT_LOAD segment at exact HOL4 vaddr
+    elf_data = read_seg_vaddr(data, dseg, bm_begin, len(theorem_data))
     if elf_data != theorem_data:
         raise ElfError(
             f"BITMAPS_BYTE_MISMATCH (elf={len(elf_data)}B theorem={len(theorem_data)}B)"
         )
 
-    # Verify heap/stack layout invariants (aligned 3, e - h >= 8192, < 2^55, disjoint from exec)
-    h, stk, e = syms["forge_heap"], syms["forge_stack"], syms["forge_stackend"]
-    if (h & 7) != 0 or (stk & 7) != 0 or (e & 7) != 0:
+    # Verify heap/stack bounds and alignment
+    if (heap & 7) != 0 or (stk & 7) != 0 or (stk_end & 15) != 0:
         raise ElfError("ELF_HEAP_UNALIGNED")
-    if not (x_end <= h < stk < e < LO55_LIMIT) or (e - h) < 8192:
+    if not (s_end <= cml_heap < bm_begin < bm_end <= rx_tmp < heap < stk < stk_end < LO55_LIMIT):
         raise ElfError("ELF_HEAP_BOUNDS_INVALID")
+    if (stk_end - heap) < 8192:
+        raise ElfError("ELF_HEAP_TOO_SMALL")
+
+    # 4. Cross-check all required ELF symbols against exact HOL4 layout addresses
+    sym_bindings = {
+        "cake_text_begin": t_begin,
+        "cml_main": t_begin,
+        "cake_main": c_main,
+        "cake_codebuffer_begin": cb_begin,
+        "cake_codebuffer_end": cb_end,
+        "_start": s_start,
+        "ffirecv16": layout["ffirecv16"],
+        "ffisend16": layout["ffisend16"],
+        "cml_exit": layout["cml_exit"],
+        "cml_install": layout["cml_install"],
+        "forge_shim_end": s_end,
+        "cake_bitmaps": bm_begin,
+        "forge_heap": heap,
+        "forge_stack": stk,
+        "forge_stackend": stk_end,
+    }
+    missing = [s for s in sym_bindings if s not in syms]
+    if missing:
+        raise ElfError("ELF_MISSING_SYMBOLS (" + ",".join(missing) + ")")
+    for name, want in sym_bindings.items():
+        if syms[name] != want:
+            raise ElfError(f"ELF_SYMBOL_VADDR_MISMATCH ({name}: elf=0x{syms[name]:x} hol4=0x{want:x})")
 
     return {
-        "exec_bytes_total": x_end - x_start,
+        "exec_bytes_total": x_end - t_begin,
         "veneers_bytes": len(elf_veneers),
         "code_bytes": len(elf_code),
         "padding_bytes": len(elf_pad),

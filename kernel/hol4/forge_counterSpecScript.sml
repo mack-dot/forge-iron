@@ -1,6 +1,11 @@
 (*
-  Forge Milestone 1: Pure Counter Specification, Conservation Theorems,
-  and Total 2-FFI Oracle (recv16 / send16).
+  Forge Milestone 1: Trusted Pure Counter Specification (SHA-256 Pinned by Gate).
+
+  Contains:
+    - Fixed-width little-endian u64 framing (le64_decode, le64_encode, frame16_decode, frame16_encode)
+    - Byte-stream 16-byte chunking (chunks16)
+    - Pure counter transition & conservation theorems (cap_val, counter_step, counter_run)
+    - Total 2-FFI oracle (recv16 / send16) modeling arbitrary partial/EOF/write-error schedules
 *)
 Theory forge_counterSpec
 Ancestors
@@ -73,6 +78,36 @@ Theorem frame16_encode_length:
   ∀tag seq. LENGTH (frame16_encode tag seq) = 16
 Proof
   simp [frame16_encode_def, le64_encode_length]
+QED
+
+(* ---- Byte-stream 16-byte chunking ---- *)
+
+Definition chunks16_def:
+  chunks16 (bs:word8 list) : (word8 list) list =
+    if LENGTH bs < 16 then []
+    else TAKE 16 bs :: chunks16 (DROP 16 bs)
+Termination
+  WF_REL_TAC `measure LENGTH` \\ simp []
+End
+
+Theorem chunks16_lt16:
+  ∀bs. LENGTH bs < 16 ⇒ chunks16 bs = []
+Proof
+  rpt strip_tac \\ simp [Once chunks16_def]
+QED
+
+Theorem chunks16_cons:
+  ∀f rest. LENGTH f = 16 ⇒ chunks16 (f ++ rest) = f :: chunks16 rest
+Proof
+  rpt strip_tac \\ simp [Once chunks16_def, TAKE_APPEND1, DROP_APPEND2]
+QED
+
+Theorem chunks16_every_len16:
+  ∀bs. EVERY (λf. LENGTH f = 16) (chunks16 bs)
+Proof
+  ho_match_mp_tac chunks16_ind \\ rpt strip_tac
+  \\ simp [Once chunks16_def]
+  \\ IF_CASES_TAC \\ simp []
 QED
 
 (* ---- Pure counter transition & conservation invariants ---- *)
@@ -189,10 +224,32 @@ Proof
   \\ strip_tac \\ rveq \\ fs [cap_val_def, WORD_LS]
 QED
 
+Theorem counter_run_take_prefix:
+  ∀fs n seq spent.
+    SND (SND (counter_run seq spent (TAKE n fs))) ≼ SND (SND (counter_run seq spent fs))
+Proof
+  Induct_on `fs` \\ simp [counter_run_def]
+  \\ rpt strip_tac
+  \\ Cases_on `n` \\ simp [counter_run_def]
+  \\ Cases_on `LENGTH h = 16` \\ simp []
+  \\ rpt (pairarg_tac \\ simp [])
+  \\ first_x_assum (qspecl_then [`n'`, `seq'`, `spent'`] mp_tac) \\ simp []
+QED
+
+Theorem FLAT_prefix:
+  ∀xs ys. xs ≼ ys ⇒ FLAT xs ≼ FLAT ys
+Proof
+  rw [IS_PREFIX_APPEND] \\ simp [FLAT_APPEND, IS_PREFIX_APPEND]
+QED
+
 (* ---- Total 2-FFI oracle for recv16 and send16 ---- *)
 
 Datatype:
-  counter_io = <| inputs : (word8 list) list; outputs : (word8 list) list |>
+  counter_io = <|
+    inputs      : (word8 list) list;
+    outputs     : (word8 list) list;
+    write_limit : num option
+  |>
 End
 
 Definition ffi_recv16_def:
@@ -214,8 +271,18 @@ Definition ffi_send16_def:
     if LENGTH bytes < 17 then
       SOME (FFIreturn bytes io)
     else
-      SOME (FFIreturn (0w :: DROP 1 bytes)
-                      (io with outputs := io.outputs ++ [TAKE 16 (DROP 1 bytes)]))
+      let frame = TAKE 16 (DROP 1 bytes) in
+      case io.write_limit of
+        NONE =>
+          SOME (FFIreturn (0w :: DROP 1 bytes)
+                          (io with outputs := io.outputs ++ [frame]))
+      | SOME 0 =>
+          SOME (FFIreturn (1w :: DROP 1 bytes)
+                          (io with outputs := io.outputs ++ [frame]))
+      | SOME (SUC n) =>
+          SOME (FFIreturn (0w :: DROP 1 bytes)
+                          (io with <| outputs := io.outputs ++ [frame];
+                                      write_limit := SOME n |>))
 End
 
 Theorem ffi_recv16_length:
@@ -249,16 +316,28 @@ Proof
   \\ gen_tac \\ Cases \\ simp [w2n_11]
 QED
 
+Definition encode_opt_num_def:
+  (encode_opt_num NONE = Num 0) ∧
+  (encode_opt_num (SOME n) = Cons (Num 1) (Num n))
+End
+
+Theorem encode_opt_num_11:
+  ∀x y. encode_opt_num x = encode_opt_num y ⇔ x = y
+Proof
+  Cases \\ Cases \\ simp [encode_opt_num_def]
+QED
+
 Definition encode_counter_io_def:
   encode_counter_io (io:counter_io) : ffi =
     Cons (List (MAP encode_byte_list io.inputs))
-         (List (MAP encode_byte_list io.outputs))
+         (Cons (List (MAP encode_byte_list io.outputs))
+               (encode_opt_num io.write_limit))
 End
 
 Theorem encode_counter_io_11:
   ∀x y. encode_counter_io x = encode_counter_io y ⇔ x = y
 Proof
-  Cases \\ Cases \\ simp [encode_counter_io_def]
+  Cases \\ Cases \\ simp [encode_counter_io_def, encode_opt_num_11]
   \\ `∀a b. MAP encode_byte_list a = MAP encode_byte_list b ⇔ a = b` by
        (Induct >- (Cases \\ simp []) \\ gen_tac \\ Cases \\ simp [encode_byte_list_11])
   \\ simp []

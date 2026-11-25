@@ -183,23 +183,30 @@ Proof
   \\ irule LIST_EQ \\ simp [LENGTH_LUPDATE, LENGTH_TAKE, LENGTH_DROP]
 QED
 
+Definition limit_frames_def:
+  (limit_frames NONE xs = xs) ∧
+  (limit_frames (SOME n) xs = TAKE (SUC n) xs)
+End
+
 Theorem counter_loop_spec:
-  ∀inps outs bufv bs seq seqv spent spentv.
+  ∀inps outs wlim bufv bs seq seqv spent spentv.
     LENGTH bs = 17 ∧ WORD seq seqv ∧ WORD spent spentv ⇒
     app (p:'ffi ffi_proj) ^(fetch_v "counter_loop" st) [bufv; seqv; spentv]
-      (W8ARRAY bufv bs * COUNTER_IO <| inputs := inps; outputs := outs |>)
+      (W8ARRAY bufv bs * COUNTER_IO <| inputs := inps; outputs := outs; write_limit := wlim |>)
       (POSTv uv.
         &(UNIT_TYPE () uv) *
-        (SEP_EXISTS bs'. SEP_EXISTS rest_inps. W8ARRAY bufv bs' * &(LENGTH bs' = 17) *
+        (SEP_EXISTS bs'. SEP_EXISTS rest_inps. SEP_EXISTS wlim'.
+          W8ARRAY bufv bs' * &(LENGTH bs' = 17) *
           COUNTER_IO <| inputs := rest_inps;
-                        outputs := outs ++ SND (SND (counter_run seq spent inps)) |>))
+                        outputs := outs ++ limit_frames wlim (SND (SND (counter_run seq spent inps)));
+                        write_limit := wlim' |>))
 Proof
   Induct_on `inps`
   >- (
     rpt strip_tac
     \\ xcf "counter_loop" st
     \\ xlet `POSTv uv. W8ARRAY bufv (1w :: DROP 1 bs) *
-                       COUNTER_IO <| inputs := []; outputs := outs |>`
+                       COUNTER_IO <| inputs := []; outputs := outs; write_limit := wlim |>`
     >- (
       simp [COUNTER_IO_def, counter_ffi_part_def, IOx_def, IO_def]
       \\ xpull \\ xffi
@@ -216,14 +223,14 @@ Proof
     \\ xlet_auto >- (xsimpl \\ fs [ml_translatorTheory.WORD_def])
     \\ xif \\ asm_exists_tac \\ fs []
     \\ xcon \\ xsimpl
-    \\ qexists_tac `[]`
-    \\ simp [counter_run_def] \\ xsimpl)
+    \\ qexists_tac `[]` \\ qexists_tac `wlim`
+    \\ Cases_on `wlim` \\ simp [counter_run_def, limit_frames_def] \\ xsimpl)
   \\ rpt strip_tac
   \\ xcf "counter_loop" st
   \\ Cases_on `LENGTH h = 16`
   >- (
     xlet `POSTv uv. W8ARRAY bufv (0w :: h) *
-                    COUNTER_IO <| inputs := inps; outputs := outs |>`
+                    COUNTER_IO <| inputs := inps; outputs := outs; write_limit := wlim |>`
     >- (
       simp [COUNTER_IO_def, counter_ffi_part_def, IOx_def, IO_def]
       \\ xpull \\ xffi
@@ -263,9 +270,78 @@ Proof
           \\ simp [frame16_encode_def, le64_encode_length, TAKE_APPEND1, DROP_APPEND2,
                    TAKE_LENGTH_ID_rwt, DROP_LENGTH_TOO_LONG])
     \\ `LENGTH out_buf = 17` by simp [frame16_encode_length]
+    \\ Cases_on `wlim`
+    >- (
+      xlet `POSTv uv. W8ARRAY bufv out_buf *
+                      COUNTER_IO <| inputs := inps;
+                                    outputs := outs ++ [frame16_encode ok out_seq];
+                                    write_limit := NONE |>`
+      >- (
+        simp [COUNTER_IO_def, counter_ffi_part_def, IOx_def, IO_def]
+        \\ xpull \\ xffi
+        \\ simp [counter_ffi_part_def, IOx_def, IO_def]
+        \\ qmatch_goalsub_abbrev_tac `FFI_part st_e u_fn ns_l`
+        \\ map_every qexists_tac [`out_buf`, `emp`, `st_e`, `u_fn`, `ns_l`, `events`]
+        \\ unabbrev_all_tac
+        \\ simp [cfHeapsBaseTheory.mk_ffi_next_def, decode_encode_counter_io,
+                 ffi_send16_def, counter_ffi_part_def,
+                 frame16_encode_length, TAKE_LENGTH_ID_rwt]
+        \\ xsimpl \\ qmatch_goalsub_abbrev_tac `FFI_part _ _ _ ev'`
+        \\ qexists_tac `ev'` \\ xsimpl)
+      \\ xlet_auto >- xsimpl
+      \\ xlet_auto >- xsimpl
+      \\ xlet_auto >- (xsimpl \\ fs [ml_translatorTheory.WORD_def])
+      \\ xif \\ asm_exists_tac \\ fs []
+      \\ xapp \\ xsimpl
+      \\ map_every qexists_tac [`emp`, `NONE`, `spent'`, `seq'`, `outs ++ [frame16_encode ok out_seq]`]
+      \\ simp [frame16_encode_length]
+      \\ xsimpl
+      \\ rpt strip_tac
+      \\ qpat_x_assum `LENGTH x = 17`
+           (strip_assume_tac o SIMP_RULE (srw_ss()) [listTheory.LENGTH_EQ_NUM_compute])
+      \\ rveq
+      \\ qexists_tac `x'` \\ qexists_tac `x''`
+      \\ Cases_on `frame16_decode h` \\ fs []
+      \\ Cases_on `counter_run seq' spent' inps` \\ rename1 `_ = (s1, s2)`
+      \\ Cases_on `s2` \\ simp [counter_run_def, limit_frames_def]
+      \\ `outs ++ [frame16_encode ok out_seq] ++ r' = outs ++ frame16_encode ok out_seq :: r'` by
+           metis_tac [listTheory.APPEND_ASSOC, listTheory.APPEND]
+      \\ pop_assum SUBST1_TAC \\ xsimpl)
+    \\ Cases_on `x`
+    >- (
+      xlet `POSTv uv. W8ARRAY bufv (1w :: frame16_encode ok out_seq) *
+                      COUNTER_IO <| inputs := inps;
+                                    outputs := outs ++ [frame16_encode ok out_seq];
+                                    write_limit := SOME 0 |>`
+      >- (
+        simp [COUNTER_IO_def, counter_ffi_part_def, IOx_def, IO_def]
+        \\ xpull \\ xffi
+        \\ simp [counter_ffi_part_def, IOx_def, IO_def]
+        \\ qmatch_goalsub_abbrev_tac `FFI_part st_e u_fn ns_l`
+        \\ map_every qexists_tac [`out_buf`, `emp`, `st_e`, `u_fn`, `ns_l`, `events`]
+        \\ unabbrev_all_tac
+        \\ simp [cfHeapsBaseTheory.mk_ffi_next_def, decode_encode_counter_io,
+                 ffi_send16_def, counter_ffi_part_def,
+                 frame16_encode_length, TAKE_LENGTH_ID_rwt]
+        \\ xsimpl \\ qmatch_goalsub_abbrev_tac `FFI_part _ _ _ ev'`
+        \\ qexists_tac `ev'` \\ xsimpl)
+      \\ xlet_auto >- xsimpl
+      \\ xlet_auto >- xsimpl
+      \\ xlet_auto >- (xsimpl \\ fs [ml_translatorTheory.WORD_def])
+      \\ xif \\ asm_exists_tac \\ fs []
+      \\ xcon \\ xsimpl
+      \\ qexists_tac `inps` \\ qexists_tac `SOME 0`
+      \\ conj_tac
+      >- (`LENGTH (frame16_encode ok out_seq) = 16` by simp [frame16_encode_length]
+          \\ fs [listTheory.LENGTH_EQ_NUM_compute])
+      \\ Cases_on `frame16_decode h` \\ fs []
+      \\ Cases_on `counter_run seq' spent' inps` \\ rename1 `_ = (s1, s2)`
+      \\ Cases_on `s2` \\ simp [counter_run_def, limit_frames_def]
+      \\ xsimpl)
     \\ xlet `POSTv uv. W8ARRAY bufv out_buf *
                        COUNTER_IO <| inputs := inps;
-                                     outputs := outs ++ [frame16_encode ok out_seq] |>`
+                                     outputs := outs ++ [frame16_encode ok out_seq];
+                                     write_limit := SOME n |>`
     >- (
       simp [COUNTER_IO_def, counter_ffi_part_def, IOx_def, IO_def]
       \\ xpull \\ xffi
@@ -283,22 +359,23 @@ Proof
     \\ xlet_auto >- (xsimpl \\ fs [ml_translatorTheory.WORD_def])
     \\ xif \\ asm_exists_tac \\ fs []
     \\ xapp \\ xsimpl
-    \\ map_every qexists_tac [`emp`, `spent'`, `seq'`, `outs ++ [frame16_encode ok out_seq]`]
+    \\ map_every qexists_tac [`emp`, `SOME n`, `spent'`, `seq'`, `outs ++ [frame16_encode ok out_seq]`]
     \\ simp [frame16_encode_length]
     \\ xsimpl
     \\ rpt strip_tac
     \\ qpat_x_assum `LENGTH x = 17`
          (strip_assume_tac o SIMP_RULE (srw_ss()) [listTheory.LENGTH_EQ_NUM_compute])
     \\ rveq
-    \\ qexists_tac `x'`
+    \\ qexists_tac `x'` \\ qexists_tac `x''`
     \\ Cases_on `frame16_decode h` \\ fs []
     \\ Cases_on `counter_run seq' spent' inps` \\ rename1 `_ = (s1, s2)`
-    \\ Cases_on `s2` \\ simp [counter_run_def]
-    \\ `outs ++ [frame16_encode ok out_seq] ++ r' = outs ++ frame16_encode ok out_seq :: r'` by
+    \\ Cases_on `s2` \\ simp [counter_run_def, limit_frames_def]
+    \\ `outs ++ [frame16_encode ok out_seq] ++ TAKE (SUC n) r' =
+        outs ++ frame16_encode ok out_seq :: TAKE (SUC n) r'` by
          metis_tac [listTheory.APPEND_ASSOC, listTheory.APPEND]
     \\ pop_assum SUBST1_TAC \\ xsimpl)
   \\ xlet `POSTv uv. W8ARRAY bufv (1w :: DROP 1 bs) *
-                     COUNTER_IO <| inputs := h::inps; outputs := outs |>`
+                     COUNTER_IO <| inputs := h::inps; outputs := outs; write_limit := wlim |>`
   >- (
     simp [COUNTER_IO_def, counter_ffi_part_def, IOx_def, IO_def]
     \\ xpull \\ xffi
@@ -315,19 +392,21 @@ Proof
   \\ xlet_auto >- xsimpl
   \\ xif \\ asm_exists_tac \\ fs []
   \\ xcon \\ xsimpl
-  \\ qexists_tac `h::inps`
-  \\ simp [counter_run_def] \\ xsimpl
+  \\ qexists_tac `h::inps` \\ qexists_tac `wlim`
+  \\ Cases_on `wlim` \\ simp [counter_run_def, limit_frames_def] \\ xsimpl
 QED
 
 Theorem counter_main_spec:
-  ∀inps uv.
+  ∀inps wlim uv.
     UNIT_TYPE () uv ⇒
     app (p:'ffi ffi_proj) ^(fetch_v "counter_main" st) [uv]
-      (COUNTER_IO <| inputs := inps; outputs := [] |>)
+      (COUNTER_IO <| inputs := inps; outputs := []; write_limit := wlim |>)
       (POSTv rv.
         &(UNIT_TYPE () rv) *
-        (SEP_EXISTS rest_inps. COUNTER_IO <| inputs := rest_inps;
-                                             outputs := SND (SND (counter_run 0w 0w inps)) |>))
+        (SEP_EXISTS rest_inps. SEP_EXISTS wlim'.
+          COUNTER_IO <| inputs := rest_inps;
+                        outputs := limit_frames wlim (SND (SND (counter_run 0w 0w inps)));
+                        write_limit := wlim' |>))
 Proof
   rpt strip_tac
   \\ xcf "counter_main" st
@@ -336,8 +415,8 @@ Proof
   \\ xlet_auto >- xsimpl
   \\ xlet_auto >- xsimpl
   \\ xapp_spec counter_loop_spec \\ xsimpl
-  \\ map_every qexists_tac [`emp`, `0w`, `0w`, `[]`, `inps`]
-  \\ xsimpl \\ rpt strip_tac \\ qexists_tac `x'` \\ xsimpl
+  \\ map_every qexists_tac [`emp`, `wlim`, `0w`, `0w`, `[]`, `inps`]
+  \\ xsimpl \\ rpt strip_tac \\ qexists_tac `x'` \\ qexists_tac `x''` \\ xsimpl
 QED
 
 (* Whole-program CakeML source semantics theorem *)
@@ -389,9 +468,13 @@ Proof
 QED
 
 Theorem counter_io_ffi_part_hprop:
-  ∀out. FFI_part_hprop (SEP_EXISTS rest_inps. COUNTER_IO <| inputs := rest_inps; outputs := out |>)
+  ∀out.
+    FFI_part_hprop
+      (SEP_EXISTS rest_inps. SEP_EXISTS wlim'.
+        COUNTER_IO <| inputs := rest_inps; outputs := out; write_limit := wlim' |>)
 Proof
   gen_tac
+  \\ ho_match_mp_tac cfMainTheory.FFI_part_hprop_SEP_EXISTS \\ gen_tac
   \\ ho_match_mp_tac cfMainTheory.FFI_part_hprop_SEP_EXISTS \\ gen_tac
   \\ simp [cfMainTheory.FFI_part_hprop_def, COUNTER_IO_def, IOx_def, IO_def,
            counter_ffi_part_def, set_sepTheory.one_def,
@@ -437,29 +520,34 @@ Theorem counter_semantics:
       (semantics_dec_list (init_state (counter_ffi io)) init_env counter_prog)
       (λb. ∃io_events.
              b = Terminate Success io_events ∧
-             sent_frames_of io_events = SND (SND (counter_run 0w 0w io.inputs)))
+             sent_frames_of io_events =
+               limit_frames io.write_limit (SND (SND (counter_run 0w 0w io.inputs))))
 Proof
   rpt strip_tac
   \\ qabbrev_tac `inps = io.inputs`
-  \\ `io = <| inputs := inps; outputs := [] |>` by simp [counter_io_component_equality, Abbr `inps`]
+  \\ qabbrev_tac `wlim = io.write_limit`
+  \\ `io = <| inputs := inps; outputs := []; write_limit := wlim |>` by
+       simp [counter_io_component_equality, Abbr `inps`, Abbr `wlim`]
   \\ pop_assum SUBST_ALL_TAC \\ simp []
   \\ rewrite_tac [counter_prog_eq_snoc]
-  \\ qspecl_then [`inps`, `Conv NONE []`] mp_tac
+  \\ qspecl_then [`inps`, `wlim`, `Conv NONE []`] mp_tac
        (INST_TYPE [mk_vartype "'ffi" |-> ``:counter_io``] counter_main_spec
         |> Q.GEN `p` |> Q.SPEC `counter_proj`)
   \\ impl_tac >- EVAL_TAC
   \\ strip_tac
-  \\ qspec_then `<| inputs := inps; outputs := [] |>` assume_tac
+  \\ qspec_then `<| inputs := inps; outputs := []; write_limit := wlim |>` assume_tac
        (GEN ``io:counter_io`` counter_Decls_thm)
-  \\ qspec_then `<| inputs := inps; outputs := [] |>` assume_tac
+  \\ qspec_then `<| inputs := inps; outputs := []; write_limit := wlim |>` assume_tac
        (GEN ``io:counter_io`` counter_ffi_eq_thm)
   \\ drule counter_io_split \\ strip_tac
   \\ qpat_x_assum `Decls _ _ _ _ _` (mp_tac o MATCH_MP call_main_gen)
   \\ disch_then (qspecl_then [`«counter_main»`, `^(fetch_v "counter_main" st)`,
                               `FST counter_proj`, `SND counter_proj`,
-                              `COUNTER_IO <| inputs := inps; outputs := [] |>`,
-                              `SEP_EXISTS rest_inps. COUNTER_IO <| inputs := rest_inps;
-                                 outputs := SND (SND (counter_run 0w 0w inps)) |>`,
+                              `COUNTER_IO <| inputs := inps; outputs := []; write_limit := wlim |>`,
+                              `SEP_EXISTS rest_inps. SEP_EXISTS wlim'.
+                                 COUNTER_IO <| inputs := rest_inps;
+                                               outputs := limit_frames wlim (SND (SND (counter_run 0w 0w inps)));
+                                               write_limit := wlim' |>`,
                               `h1`, `h2`] mp_tac)
   \\ simp [ml_progTheory.lookup_var_def, counter_lookup_thm, counter_io_ffi_part_hprop]
   \\ simp [semanticsPropsTheory.sem_satisfies_def]
@@ -489,7 +577,7 @@ Proof
   \\ qpat_x_assum `call_FFI_rel꙳ _ _` mp_tac
   \\ simp [ml_progTheory.init_state_def]
   \\ strip_tac
-  \\ qspecl_then [`<| inputs := inps; outputs := [] |>`, `st3.ffi`] mp_tac
+  \\ qspecl_then [`<| inputs := inps; outputs := []; write_limit := wlim |>`, `st3.ffi`] mp_tac
        counter_ffi_outputs_eq_sent_frames
   \\ simp []
 QED

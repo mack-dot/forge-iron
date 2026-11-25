@@ -1,24 +1,38 @@
 #!/usr/bin/env python3
-"""The Iron Law gate.
+"""The Iron Law gate (Exact Term.aconv + Pinned Spec SHA-256 Edition).
 
 end_to_end=true only if ALL of these hold:
   1. kernel/GATE.manifest exists and names holmake_dir, binary, hash_file,
-     audit_theory, audit_theorem, compile_theory, and shim_theory (fixed
-     key=value lines; no JSON or YAML).
-  2. No `cheat`, `mk_thm`, `new_axiom`, `disk_thm`, `add_tag`, or
-     `mk_oracle_thm` appears in any *.sml under kernel/ or spec-compiler/.
-  3. `Holmake --no_prereqs` replays all proofs in holmake_dir with exit 0.
-  4. Gate-owned HOL4 kernel audit (`scripts/hol_audit.sml`) passes with exit 0:
-     - 0 hypotheses and DISK_THM-only oracle tags on all forge_* theories;
+     spec_hashes, audit_theory, audit_theorem, nonvacuous_theorem, spec_theory,
+     contract_theory, compile_theory, and shim_theory (fixed key=value lines).
+  2. Every pinned specification file listed in spec_hashes exists inside the
+     repository and matches its pinned lowercase 64-hex SHA-256 digest BEFORE
+     AND AFTER Holmake (preventing any prover edit to counter_run, chunks16,
+     forge_elf_loaded, arm8_target_real, real_mc, svc_read_rel, svc_write_rel,
+     svc_exit_group_rel, whole_step, shim_step, or ELF layout constants).
+  3. No `cheat`, `mk_thm`, `new_axiom`, `mk_axiom_thm`, `disk_thm`, `add_tag`,
+     or `mk_oracle_thm` appears in any *.sml, *.sig, or *.ML under kernel/ or
+     spec-compiler/, and Holmakefile contains no hardcoded developer paths.
+  4. `Holmake --qof -j 1 --no_prereqs` replays all proofs in holmake_dir with
+     exit 0.
+  5. Gate-owned HOL4 kernel audit (`scripts/hol_audit.sml`) passes with exit 0:
+     - parses the EXACT expected conclusions for audit_theorem and
+       nonvacuous_theorem BEFORE loading audit_theory (immune to grammar/overload
+       hijacking) and enforces exact kernel `Term.aconv`;
+     - 0 hypotheses, 0 direct axioms, DISK_THM-only oracle tags on all forge_*
+       theories, including audit_theorem and nonvacuous_theorem;
+     - spec_theory, contract_theory, compile_theory, and shim_theory in
+       transitive closure;
      - transitive DB.axioms closure equals ONLY the 4 standard bool axioms;
-     - extracts raw verified bytes directly from the proved HOL4 theorems
-       (code, data/bitmaps, export_arm8 veneers, and raw ARM64 shim).
-  5. hash_file holds exactly 64 lowercase hex characters and matches
+     - extracts raw verified bytes AND all 24 exact HOL4 layout constants
+       (theorem_layout.txt) directly from proved HOL4 definitions.
+  6. hash_file holds exactly 64 lowercase hex characters and matches
      SHA256(binary).
-  6. Pure-Python ELF64 AArch64 check confirms static non-PIE ET_EXEC,
-     zero PT_INTERP / PT_DYNAMIC, strict W^X, all vaddrs < 2^55 (P-LO55),
-     zero unverified gap bytes across 100% of PF_X, and byte-for-byte
-     equality against all HOL4-extracted theorem byte blobs.
+  7. Pure-Python ELF64 AArch64 check confirms static non-PIE ET_EXEC,
+     zero PT_INTERP / PT_DYNAMIC, strict W^X, disjoint PT_LOAD segments,
+     all vaddrs < 2^55 (P-LO55), exact e_entry and RX/RW PT_LOAD vaddr/memsz
+     binding against theorem_layout.txt, zero unverified gap bytes across 100%
+     of PF_X, and byte-for-byte equality against all HOL4-extracted blobs.
 
 Any other case prints end_to_end=false with a reason and exits 1.
 """
@@ -39,14 +53,20 @@ REQUIRED = (
     "holmake_dir",
     "binary",
     "hash_file",
+    "spec_hashes",
     "audit_theory",
     "audit_theorem",
+    "nonvacuous_theorem",
+    "spec_theory",
+    "contract_theory",
     "compile_theory",
     "shim_theory",
 )
 HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
 CHEAT_RE = re.compile(r"\bcheat\b")
-FORBIDDEN_RE = re.compile(r"\b(mk_thm|new_axiom|disk_thm|add_tag|mk_oracle_thm)\b")
+FORBIDDEN_RE = re.compile(r"\b(mk_thm|new_axiom|mk_axiom_thm|disk_thm|add_tag|mk_oracle_thm)\b")
+HARDCODED_DEV_PATH_RE = re.compile(r"(/Users/|/home/|C:\\Users\\)")
+SOURCE_SUFFIXES = (".sml", ".sig", ".ML")
 
 
 def fail(reason: str) -> int:
@@ -80,7 +100,41 @@ def inside(root: Path, rel: str) -> Path:
     return p
 
 
-def scan_forbidden_sml(root: Path, hol_dir: Path) -> str | None:
+def verify_pinned_specs(root: Path, spec_hashes_path: Path) -> str | None:
+    if not spec_hashes_path.is_file():
+        return f"SPEC_HASH_FILE_MISSING ({spec_hashes_path.name})"
+    entries: list[tuple[str, Path, str]] = []
+    seen: set[Path] = set()
+    for n, raw in enumerate(spec_hashes_path.read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            return f"SPEC_HASH_FILE_MALFORMED (line {n})"
+        digest, rel = parts[0].strip(), parts[1].strip()
+        if not HEX64.match(digest):
+            return f"SPEC_HASH_FILE_MALFORMED (line {n}: invalid sha256)"
+        try:
+            target = inside(root, rel)
+        except ValueError as e:
+            return f"SPEC_HASH_FILE_MALFORMED ({e})"
+        if target in seen:
+            return f"SPEC_HASH_FILE_MALFORMED (duplicate path {rel})"
+        seen.add(target)
+        entries.append((digest, target, rel))
+    if len(entries) < 2:
+        return f"SPEC_HASH_FILE_MALFORMED (expected >= 2 pinned spec files, got {len(entries)})"
+    for want, target, rel in entries:
+        if not target.is_file():
+            return f"SPEC_FILE_MISSING ({rel})"
+        got = hashlib.sha256(target.read_bytes()).hexdigest()
+        if got != want:
+            return f"SPEC_HASH_MISMATCH ({rel}: got {got} != pinned {want})"
+    return None
+
+
+def scan_forbidden_sources(root: Path, hol_dir: Path) -> str | None:
     dirs = [hol_dir]
     for sub in ("kernel", "spec-compiler"):
         p = root / sub
@@ -88,16 +142,29 @@ def scan_forbidden_sml(root: Path, hol_dir: Path) -> str | None:
             dirs.append(p)
     seen: set[Path] = set()
     for base in dirs:
-        for script in sorted(base.rglob("*.sml")):
-            if ".hol" in script.parts or script in seen:
+        for f in sorted(base.rglob("*")):
+            if not f.is_file() or ".hol" in f.parts or f in seen:
                 continue
-            seen.add(script)
-            txt = script.read_text(errors="replace")
+            if f.name == "Holmakefile":
+                seen.add(f)
+                txt = f.read_text(errors="replace")
+                if HARDCODED_DEV_PATH_RE.search(txt):
+                    return f"HARDCODED_DEV_PATH ({f.relative_to(root)})"
+                if CHEAT_RE.search(txt):
+                    return f"CHEAT_FOUND ({f.relative_to(root)})"
+                m = FORBIDDEN_RE.search(txt)
+                if m:
+                    return f"FORBIDDEN_PRIMITIVE ({m.group(1)} in {f.relative_to(root)})"
+                continue
+            if f.suffix not in SOURCE_SUFFIXES:
+                continue
+            seen.add(f)
+            txt = f.read_text(errors="replace")
             if CHEAT_RE.search(txt):
-                return f"CHEAT_FOUND ({script.relative_to(root)})"
+                return f"CHEAT_FOUND ({f.relative_to(root)})"
             m = FORBIDDEN_RE.search(txt)
             if m:
-                return f"FORBIDDEN_PRIMITIVE ({m.group(1)} in {script.relative_to(root)})"
+                return f"FORBIDDEN_PRIMITIVE ({m.group(1)} in {f.relative_to(root)})"
     return None
 
 
@@ -132,21 +199,31 @@ def main(argv: list[str]) -> int:
         hol_dir = inside(root, m["holmake_dir"])
         binary = inside(root, m["binary"])
         hash_file = inside(root, m["hash_file"])
+        spec_hashes_file = inside(root, m["spec_hashes"])
     except ValueError as e:
         return fail(f"BAD_MANIFEST ({e})")
     if not hol_dir.is_dir():
         return fail("HOLMAKE_DIR_MISSING")
 
-    bad_sml = scan_forbidden_sml(root, hol_dir)
-    if bad_sml:
-        return fail(bad_sml)
+    bad_spec = verify_pinned_specs(root, spec_hashes_file)
+    if bad_spec:
+        return fail(bad_spec)
+
+    bad_src = scan_forbidden_sources(root, hol_dir)
+    if bad_src:
+        return fail(bad_src)
 
     holmake = shutil.which("Holmake")
     if holmake is None:
         return fail("HOL4_NOT_INSTALLED (Holmake not on PATH)")
-    r = subprocess.run([holmake, "--no_prereqs"], cwd=hol_dir)
+    r = subprocess.run([holmake, "--qof", "-j", "1", "--no_prereqs"], cwd=hol_dir)
     if r.returncode != 0:
         return fail(f"HOLMAKE_FAILED (exit {r.returncode})")
+
+    # Re-verify pinned spec files after Holmake in case build modified sources
+    bad_spec_after = verify_pinned_specs(root, spec_hashes_file)
+    if bad_spec_after:
+        return fail(bad_spec_after)
 
     hol_bin = shutil.which("hol")
     if hol_bin is None:
@@ -163,6 +240,9 @@ def main(argv: list[str]) -> int:
             {
                 "FORGE_AUDIT_THEORY": m["audit_theory"],
                 "FORGE_AUDIT_THEOREM": m["audit_theorem"],
+                "FORGE_AUDIT_NONVAC_THEOREM": m["nonvacuous_theorem"],
+                "FORGE_AUDIT_SPEC_THY": m["spec_theory"],
+                "FORGE_AUDIT_CONTRACT_THY": m["contract_theory"],
                 "FORGE_AUDIT_COMPILE_THY": m["compile_theory"],
                 "FORGE_AUDIT_SHIM_THY": m["shim_theory"],
                 "FORGE_AUDIT_OUT_DIR": str(out_dir),
@@ -196,10 +276,15 @@ def main(argv: list[str]) -> int:
             if not p.is_file() or p.stat().st_size == 0:
                 return fail(f"HOL_AUDIT_MISSING_BYTES ({bn})")
 
+        layout_file = out_dir / "theorem_layout.txt"
+        if not layout_file.is_file() or layout_file.stat().st_size == 0:
+            return fail("HOL_AUDIT_MISSING_LAYOUT (theorem_layout.txt)")
+
         t_veneers = (out_dir / "theorem_veneers.bin").read_bytes()
         t_code = (out_dir / "theorem_code.bin").read_bytes()
         t_shim = (out_dir / "theorem_shim.bin").read_bytes()
         t_data = (out_dir / "theorem_data.bin").read_bytes()
+        layout_text = layout_file.read_text()
 
     if not hash_file.is_file():
         return fail("HASH_FILE_MISSING (the proof build did not write it)")
@@ -213,7 +298,8 @@ def main(argv: list[str]) -> int:
         return fail(f"HASH_MISMATCH (binary {got} != theorem {want})")
 
     try:
-        info = elf64_check.verify_kernel_elf(binary, t_veneers, t_code, t_shim, t_data)
+        layout = elf64_check.parse_layout(layout_text)
+        info = elf64_check.verify_kernel_elf(binary, t_veneers, t_code, t_shim, t_data, layout)
     except elf64_check.ElfError as e:
         return fail(f"ELF_CHECK_FAILED ({e})")
 

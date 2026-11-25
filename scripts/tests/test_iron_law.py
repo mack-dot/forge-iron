@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Negative controls for the Iron Law gate (24 cases: 12 original + 12 M1 controls).
+"""Negative controls for the Iron Law gate (38 cases: 12 original + 26 M1/Pass-1 controls).
 
-Each case builds a scratch repository with a synthetic valid static AArch64 ELF64
-and fake Holmake/hol tools to test the gate logic deterministically. These cases
-test the gate logic only; real proof replay happens when scripts/iron_law.py runs
-against the real HOL4 toolchain and kernel/.
+Each case builds a scratch repository with a synthetic valid static AArch64 ELF64,
+pinned spec SHA-256 files, and fake Holmake/hol tools to test the gate logic
+deterministically without requiring HOL4. Real HOL4 kernel auditor exact
+Term.aconv negative controls run in `scripts/tests/test_hol_audit_real.py`.
 """
 from __future__ import annotations
 
@@ -33,11 +33,71 @@ MANIFEST = (
     "holmake_dir=kernel/proof\n"
     "binary=kernel/build/forge-kernel\n"
     "hash_file=kernel/build/machine_bytes_hash.txt\n"
+    "spec_hashes=kernel/SPEC_HASHES.sha256\n"
     "audit_theory=forge_m1Kernel\n"
     "audit_theorem=forge_m1_kernel_correct\n"
+    "nonvacuous_theorem=forge_m1_nonvacuous\n"
+    "spec_theory=forge_counterSpec\n"
+    "contract_theory=forge_contractSpec\n"
     "compile_theory=forge_counterCompile\n"
     "shim_theory=forge_shimProof\n"
 )
+
+SPEC_COUNTER_TEXT = "Theory forge_counterSpec\nDefinition counter_run_def: counter_run x = x End\n"
+SPEC_CONTRACT_TEXT = "Theory forge_contractSpec\nDefinition forge_elf_loaded_def: forge_elf_loaded x = T End\n"
+
+
+def default_layout(
+    *,
+    x_vaddr: int = 0x00400000,
+    d_vaddr: int = 0x00410000,
+    veneers_len: int = len(SYN_VENEERS),
+    code_len: int = len(SYN_CODE),
+    pad_len: int = len(SYN_PAD),
+    shim_len: int = len(SYN_SHIM),
+    data_len: int = len(SYN_DATA),
+) -> dict[str, int]:
+    c_main = x_vaddr + veneers_len
+    cb_begin = c_main + code_len
+    cb_end = cb_begin + pad_len
+    s_start = cb_end
+    s_end = s_start + shim_len
+    bm_begin = d_vaddr + 0x18
+    bm_end = bm_begin + data_len
+    rx_tmp = d_vaddr + 0x1000
+    heap = d_vaddr + 0x10000
+    stk = heap + 0x10000
+    stk_end = stk + 0x10000
+    return {
+        "veneers_base": x_vaddr,
+        "ffirecv16_veneer": x_vaddr + 4,
+        "ffisend16_veneer": x_vaddr + 8,
+        "install_veneer": x_vaddr + 12,
+        "exit_veneer": x_vaddr + 12,
+        "cake_main": c_main,
+        "cb_begin": cb_begin,
+        "cb_end": cb_end,
+        "cbspace": pad_len,
+        "shim_base": s_start,
+        "ffirecv16": s_start + 4,
+        "ffisend16": s_start + 8,
+        "cml_exit": s_start + 12,
+        "cml_install": s_start + 12,
+        "shim_end": s_end,
+        "cml_heap": d_vaddr,
+        "cml_stack": d_vaddr + 8,
+        "cml_stackend": d_vaddr + 16,
+        "cake_bitmaps": bm_begin,
+        "bm_buf_end": bm_end,
+        "rx_tmp": rx_tmp,
+        "forge_heap": heap,
+        "forge_stack": stk,
+        "forge_stackend": stk_end,
+    }
+
+
+def format_layout(layout: dict[str, int]) -> str:
+    return "".join(f"{k}={v}\n" for k, v in layout.items())
 
 
 def make_synthetic_elf(
@@ -51,11 +111,23 @@ def make_synthetic_elf(
     wx_segment: bool = False,
     high_vaddr: bool = False,
     high_entry: bool = False,
+    x_vaddr_override: int | None = None,
+    rw_memsz_override: int | None = None,
 ) -> bytes:
-    x_vaddr = (1 << 55) if high_entry else 0x00400000
+    x_vaddr = x_vaddr_override if x_vaddr_override is not None else ((1 << 55) if high_entry else 0x00400000)
     d_vaddr = (1 << 55) if high_vaddr else (x_vaddr + 0x10000)
+    lay = default_layout(
+        x_vaddr=x_vaddr,
+        d_vaddr=d_vaddr,
+        veneers_len=len(veneers),
+        code_len=len(code),
+        pad_len=len(pad),
+        shim_len=len(shim),
+        data_len=len(data_words),
+    )
+
     exec_blob = veneers + code + pad + shim
-    data_blob = data_words
+    data_blob = (b"\x00" * 0x18) + data_words
 
     phnum = 3 if add_pt_dynamic else 2
     ehdr_size = 64
@@ -65,34 +137,23 @@ def make_synthetic_elf(
     x_off = 0x1000
     d_off = 0x2000
 
-    # Symbols
-    t_begin = x_vaddr
-    c_main = x_vaddr + len(veneers)
-    cb_begin = c_main + len(code)
-    cb_end = cb_begin + len(pad)
-    s_start = cb_end
-    s_end = s_start + len(shim)
-    heap = d_vaddr + 0x10000
-    stk = heap + 0x10000
-    stk_end = stk + 0x10000
-
     sym_list = [
         ("", 0),
-        ("cake_text_begin", t_begin),
-        ("cml_main", t_begin),
-        ("cake_main", c_main),
-        ("cake_codebuffer_begin", cb_begin),
-        ("cake_codebuffer_end", cb_end),
-        ("_start", s_start),
-        ("ffirecv16", s_start + 4),
-        ("ffisend16", s_start + 8),
-        ("cml_exit", s_start + 12),
-        ("cml_install", s_start + 12),
-        ("forge_shim_end", s_end),
-        ("cake_bitmaps", d_vaddr),
-        ("forge_heap", heap),
-        ("forge_stack", stk),
-        ("forge_stackend", stk_end),
+        ("cake_text_begin", lay["veneers_base"]),
+        ("cml_main", lay["veneers_base"]),
+        ("cake_main", lay["cake_main"]),
+        ("cake_codebuffer_begin", lay["cb_begin"]),
+        ("cake_codebuffer_end", lay["cb_end"]),
+        ("_start", lay["shim_base"]),
+        ("ffirecv16", lay["ffirecv16"]),
+        ("ffisend16", lay["ffisend16"]),
+        ("cml_exit", lay["cml_exit"]),
+        ("cml_install", lay["cml_install"]),
+        ("forge_shim_end", lay["shim_end"]),
+        ("cake_bitmaps", lay["cake_bitmaps"]),
+        ("forge_heap", lay["forge_heap"]),
+        ("forge_stack", lay["forge_stack"]),
+        ("forge_stackend", lay["forge_stackend"]),
     ]
 
     strtab = bytearray(b"\x00")
@@ -109,7 +170,6 @@ def make_synthetic_elf(
     symtab_off = 0x3400
     shoff = 0x3800
 
-    # Build 3 section headers: NULL, .strtab (idx 1), .symtab (idx 2)
     shdrs = bytearray()
     shdrs.extend(struct.pack("<IIQQQQIIQQ", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     shdrs.extend(struct.pack("<IIQQQQIIQQ", 0, 3, 0, 0, strtab_off, len(strtab), 0, 0, 1, 0))
@@ -118,28 +178,29 @@ def make_synthetic_elf(
     ehdr = struct.pack(
         "<4sBBBBB7sHHIQQQIHHHHHH",
         b"\x7fELF",
-        2,  # ELFCLASS64
-        1,  # ELFDATA2LSB
-        1,  # EV_CURRENT
+        2,
+        1,
+        1,
         0,
         0,
         b"\x00" * 7,
-        2,  # ET_EXEC
-        183,  # EM_AARCH64
+        2,
+        183,
         1,
-        s_start,  # e_entry
+        lay["shim_base"],
         phoff,
         shoff,
         0,
         ehdr_size,
         phentsize,
         phnum,
-        64,  # e_shentsize
-        3,  # e_shnum
+        64,
+        3,
         0,
     )
 
     x_flags = (4 | 2 | 1) if wx_segment else (4 | 1)
+    rw_memsz = rw_memsz_override if rw_memsz_override is not None else 0x30000
     phdrs = bytearray()
     phdrs.extend(
         struct.pack(
@@ -148,7 +209,7 @@ def make_synthetic_elf(
     )
     phdrs.extend(
         struct.pack(
-            "<IIQQQQQQ", 1, 4 | 2, d_off, d_vaddr, d_vaddr, len(data_blob), 0x30000, 0x10000
+            "<IIQQQQQQ", 1, 4 | 2, d_off, d_vaddr, d_vaddr, len(data_blob), rw_memsz, 0x10000
         )
     )
     if add_pt_dynamic:
@@ -167,6 +228,7 @@ def make_synthetic_elf(
 
 GOOD_BIN = make_synthetic_elf()
 GOOD_HASH = hashlib.sha256(GOOD_BIN).hexdigest()
+GOOD_LAYOUT = format_layout(default_layout())
 
 
 def flip_bit(buf: bytes, offset: int) -> bytes:
@@ -185,9 +247,17 @@ def make_repo(
     hash_text: str | None = None,
     binary: bytes | None = GOOD_BIN,
     script_text: str = "Theorem t: T\nProof simp[]\nQED\n",
+    holmakefile_text: str | None = "INCLUDES = $(CAKEMLDIR)/misc\n",
     spec_compiler_sml: str | None = None,
     write_hash: bool = True,
+    write_layout: bool = True,
+    layout_text: str = GOOD_LAYOUT,
     with_hol: bool = True,
+    check_holmake_flags: bool = True,
+    write_spec_hashes: bool = True,
+    spec_hashes_override: str | None = None,
+    spec_counter_text: str = SPEC_COUNTER_TEXT,
+    spec_contract_text: str = SPEC_CONTRACT_TEXT,
 ) -> Path:
     (d / "kernel/proof").mkdir(parents=True)
     (d / "kernel/build").mkdir(parents=True)
@@ -195,6 +265,20 @@ def make_repo(
     if manifest is not None:
         (d / "kernel/GATE.manifest").write_text(manifest)
     (d / "kernel/proof/counterScript.sml").write_text(script_text)
+    (d / "kernel/proof/forge_counterSpecScript.sml").write_text(spec_counter_text)
+    (d / "kernel/proof/forge_contractSpecScript.sml").write_text(spec_contract_text)
+    if write_spec_hashes:
+        if spec_hashes_override is not None:
+            (d / "kernel/SPEC_HASHES.sha256").write_text(spec_hashes_override)
+        else:
+            h1 = hashlib.sha256(SPEC_COUNTER_TEXT.encode()).hexdigest()
+            h2 = hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()
+            (d / "kernel/SPEC_HASHES.sha256").write_text(
+                f"{h1}  kernel/proof/forge_counterSpecScript.sml\n"
+                f"{h2}  kernel/proof/forge_contractSpecScript.sml\n"
+            )
+    if holmakefile_text is not None:
+        (d / "kernel/proof/Holmakefile").write_text(holmakefile_text)
     if spec_compiler_sml is not None:
         (d / "spec-compiler/badHelper.sml").write_text(spec_compiler_sml)
     if binary is not None:
@@ -207,6 +291,8 @@ def make_repo(
     tools.mkdir()
     hm = tools / "Holmake"
     body = "#!/bin/sh\n"
+    if check_holmake_flags:
+        body += 'if [ "$*" != "--qof -j 1 --no_prereqs" ]; then echo "BAD_FLAGS:$*" >&2; exit 99; fi\n'
     if write_hash:
         body += f"printf '%s\\n' '{h_val}' > ../build/machine_bytes_hash.txt\n"
     body += f"exit {holmake_exit}\n"
@@ -223,6 +309,8 @@ out = Path(os.environ["FORGE_AUDIT_OUT_DIR"])
 (out / "theorem_code.bin").write_bytes({SYN_CODE!r})
 (out / "theorem_shim.bin").write_bytes({SYN_SHIM!r})
 (out / "theorem_data.bin").write_bytes({SYN_DATA!r})
+if {write_layout!r}:
+    (out / "theorem_layout.txt").write_text({layout_text!r})
 sys.stdout.write({hol_audit_stdout!r})
 sys.exit({hol_audit_exit})
 """
@@ -261,7 +349,7 @@ CASES = [
     ("reject: hash file malformed", {"hash_text": "abc"}, True, 1, "HASH_FILE_MALFORMED"),
     ("reject: hash upper case", {"hash_text": GOOD_HASH.upper()}, True, 1, "HASH_FILE_MALFORMED"),
     ("reject: proof build writes no hash", {"write_hash": False}, True, 1, "HASH_FILE_MISSING"),
-    # 12 new M1 security controls (planted failures)
+    # M1 byte-equivalence & primitive controls (13 cases)
     ("reject: mk_thm in a proof script", {"script_text": "val bad = mk_thm ([], ``F``);\n"}, True, 1, "FORBIDDEN_PRIMITIVE"),
     ("reject: new_axiom in a proof script", {"script_text": "val bad = new_axiom (\"x\", ``F``);\n"}, True, 1, "FORBIDDEN_PRIMITIVE"),
     ("reject: forbidden primitive in spec-compiler/", {"spec_compiler_sml": "val x = new_axiom (\"y\", ``F``);\n"}, True, 1, "FORBIDDEN_PRIMITIVE"),
@@ -275,6 +363,21 @@ CASES = [
     ("reject: PF_W|PF_X segment (W^X violation)", {"binary": make_synthetic_elf(wx_segment=True)}, True, 1, "ELF_WX_VIOLATION"),
     ("reject: segment vaddr >= 2^55 (P-LO55 violation)", {"binary": make_synthetic_elf(high_vaddr=True)}, True, 1, "ELF_VADDR_ABOVE_LO55"),
     ("reject: entry vaddr >= 2^55 (P-LO55 violation)", {"binary": make_synthetic_elf(high_entry=True)}, True, 1, "ELF_ENTRY_ABOVE_LO55"),
+    # Pass 1 hardened controls (8 new planted failures from hostile audit)
+    ("reject: shifted link base (0x800000 vs HOL4 0x400000)", {"binary": make_synthetic_elf(x_vaddr_override=0x00800000)}, True, 1, "ELF_ENTRY_MISMATCH"),
+    ("reject: unmapped .bss heap/stackend in RW PT_LOAD", {"binary": make_synthetic_elf(rw_memsz_override=0x2000)}, True, 1, "ELF_RW_HEAP_UNMAPPED"),
+    ("reject: missing theorem_layout.txt from HOL auditor", {"write_layout": False}, True, 1, "HOL_AUDIT_MISSING_LAYOUT"),
+    ("reject: hardcoded developer path in Holmakefile", {"holmakefile_text": "CAKEMLDIR = /Users/dev/cakeml\n"}, True, 1, "HARDCODED_DEV_PATH"),
+    ("reject: HOL auditor flags shadowed constant", {"hol_audit_exit": 1, "hol_audit_stdout": "HOL_AUDIT_FAIL: missing required constant: forge_counterSpec$counter_run\n"}, True, 1, "HOL_AUDIT_FAILED"),
+    ("reject: HOL auditor flags missing forge_m1_nonvacuous", {"hol_audit_exit": 1, "hol_audit_stdout": "HOL_AUDIT_FAIL: missing non-vacuity theorem\n"}, True, 1, "HOL_AUDIT_FAILED"),
+    ("reject: HOL auditor flags b <> Fail premise escape hatch", {"hol_audit_exit": 1, "hol_audit_stdout": "HOL_AUDIT_FAIL: EXACT_TERM_MISMATCH on forge_m1Kernel.forge_m1_kernel_correct\n"}, True, 1, "HOL_AUDIT_FAILED"),
+    ("reject: HOL auditor flags tacked-on biconditional conjunct", {"hol_audit_exit": 1, "hol_audit_stdout": "HOL_AUDIT_FAIL: EXACT_TERM_MISMATCH on forge_m1Kernel.forge_m1_kernel_correct\n"}, True, 1, "HOL_AUDIT_FAILED"),
+    # Spec-hash pinning & exact Term.aconv negative controls (5 new planted failures)
+    ("reject: missing kernel/SPEC_HASHES.sha256", {"write_spec_hashes": False}, True, 1, "SPEC_HASH_FILE_MISSING"),
+    ("reject: malformed kernel/SPEC_HASHES.sha256", {"spec_hashes_override": "not-a-hash  kernel/proof/x.sml\n"}, True, 1, "SPEC_HASH_FILE_MALFORMED"),
+    ("reject: 1-byte mutation in pinned forge_counterSpecScript.sml", {"spec_counter_text": SPEC_COUNTER_TEXT + " "}, True, 1, "SPEC_HASH_MISMATCH"),
+    ("reject: 1-byte mutation in pinned forge_contractSpecScript.sml", {"spec_contract_text": SPEC_CONTRACT_TEXT + " "}, True, 1, "SPEC_HASH_MISMATCH"),
+    ("reject: HOL auditor flags exact Term.aconv mismatch on nonvacuous", {"hol_audit_exit": 1, "hol_audit_stdout": "HOL_AUDIT_FAIL: EXACT_TERM_MISMATCH on forge_m1Kernel.forge_m1_nonvacuous\n"}, True, 1, "HOL_AUDIT_FAILED"),
 ]
 
 

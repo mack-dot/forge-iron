@@ -1,7 +1,4 @@
-ifndef CAKEMLDIR
-CAKEMLDIR = /Users/mackianni/forge/.toolchain/experiments/refund-cakeml-20261104/cakeml
-endif
-
+# Require CAKEMLDIR from the environment (no hardcoded local developer paths).
 INCLUDES = $(CAKEMLDIR)/misc \
            $(CAKEMLDIR)/semantics \
            $(CAKEMLDIR)/semantics/ffi \
