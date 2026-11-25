@@ -1,0 +1,24 @@
+ifndef CAKEMLDIR
+CAKEMLDIR = /Users/mackianni/forge/.toolchain/experiments/refund-cakeml-20261104/cakeml
+endif
+
+INCLUDES = $(CAKEMLDIR)/misc \
+           $(CAKEMLDIR)/semantics \
+           $(CAKEMLDIR)/semantics/ffi \
+           $(CAKEMLDIR)/semantics/proofs \
+           $(CAKEMLDIR)/translator \
+           $(CAKEMLDIR)/characteristic \
+           $(CAKEMLDIR)/basis \
+           $(CAKEMLDIR)/compiler/backend \
+           $(CAKEMLDIR)/compiler/backend/semantics \
+           $(CAKEMLDIR)/compiler/backend/proofs \
+           $(CAKEMLDIR)/compiler/backend/arm8 \
+           $(CAKEMLDIR)/compiler/backend/arm8/proofs \
+           $(CAKEMLDIR)/compiler/encoders/arm8 \
+           $(CAKEMLDIR)/compiler/encoders/arm8/proofs \
+           $(CAKEMLDIR)/compiler/encoders/asm \
+           $(CAKEMLDIR)/cv_translator \
+           $(HOLDIR)/examples/l3-machine-code/arm8/model \
+           $(HOLDIR)/examples/l3-machine-code/arm8/step
+
+HOLHEAP = $(CAKEMLDIR)/cv_translator/cake_compile_heap

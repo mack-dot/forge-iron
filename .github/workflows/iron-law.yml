@@ -12,9 +12,46 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 scripts/tests/test_iron_law.py
   end-to-end:
-    # Red until Milestone 1 is really proved. Do not mark this job optional.
+    # Required check. Never mark optional or continue-on-error.
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      HOL4_COMMIT: 9783a49979c94c401ff8c0e51b2eefae7ea95ae3
+      CAKEML_COMMIT: cd9155694c16831373ab695a670794f23282ed62
+      TOOLCHAIN_ROOT: /home/runner/forge-toolchain
     steps:
       - uses: actions/checkout@v4
-      # Milestone 1 adds the pinned HOL4 + CakeML install here.
-      - run: python3 scripts/iron_law.py
+      - name: Install Poly/ML, AArch64 binutils, and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            polyml libpolyml-dev build-essential git \
+            binutils-aarch64-linux-gnu qemu-user-static
+      - name: Cache pinned HOL4 + CakeML toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TOOLCHAIN_ROOT }}
+          key: hol4-${{ env.HOL4_COMMIT }}-cakeml-${{ env.CAKEML_COMMIT }}-u2404-v1
+      - name: Build pinned HOL4 + CakeML toolchain on cache miss
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$TOOLCHAIN_ROOT"
+          git clone https://github.com/HOL-Theorem-Prover/HOL.git "$TOOLCHAIN_ROOT/HOL"
+          git -C "$TOOLCHAIN_ROOT/HOL" checkout "$HOL4_COMMIT"
+          (cd "$TOOLCHAIN_ROOT/HOL" && poly < tools/smart-configure.sml && bin/build)
+          git clone https://github.com/CakeML/cakeml.git "$TOOLCHAIN_ROOT/cakeml"
+          git -C "$TOOLCHAIN_ROOT/cakeml" checkout "$CAKEML_COMMIT"
+          export PATH="$TOOLCHAIN_ROOT/HOL/bin:$PATH"
+          (cd "$TOOLCHAIN_ROOT/HOL/examples/l3-machine-code/arm8/step" && Holmake)
+          (cd "$TOOLCHAIN_ROOT/cakeml/cv_translator" && Holmake cake_compile_heap)
+          (cd "$TOOLCHAIN_ROOT/cakeml/basis" && Holmake Word8ArrayProofTheory.uo)
+          (cd "$TOOLCHAIN_ROOT/cakeml/compiler/backend/arm8/proofs" && Holmake)
+      - name: Run Iron Law gate (Holmake + HOL4 kernel audit + ELF byte-equivalence)
+        env:
+          CAKEMLDIR: /home/runner/forge-toolchain/cakeml
+        run: |
+          export PATH="$TOOLCHAIN_ROOT/HOL/bin:$PATH"
+          python3 scripts/iron_law.py
+      - name: Run ARM64 black-box smoke suite under QEMU
+        run: python3 scripts/smoke_m1.py --qemu qemu-aarch64-static kernel/build/forge-kernel

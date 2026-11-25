@@ -1,0 +1,7 @@
+holmake_dir=kernel/hol4
+binary=kernel/build/forge-kernel
+hash_file=kernel/build/machine_bytes_hash.txt
+audit_theory=forge_m1Kernel
+audit_theorem=forge_m1_kernel_correct
+compile_theory=forge_counterCompile
+shim_theory=forge_shimProof
