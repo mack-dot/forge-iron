@@ -1,0 +1,66 @@
+# Reproducible Upstream-Only HOL4 + CakeML ARM64 Toolchain Image
+#
+# Contains ONLY pinned upstream Poly/ML 5.9.1, HOL4, CakeML (with prebuilt
+# arm8 backend proofs and eval_cake_compile_arm8Lib), AArch64 binutils, and
+# QEMU user-mode emulation.
+#
+# Contains ZERO forge-iron sources and ZERO forge_* theories. Every forge_*
+# proof and binary artifact is built fresh from `Holmake cleanAll` at CI/audit
+# time.
+
+FROM ubuntu:24.04
+
+ARG POLYML_VERSION=5.9.1
+ARG HOL4_COMMIT=9783a49979c94c401ff8c0e51b2eefae7ea95ae3
+ARG CAKEML_COMMIT=cd9155694c16831373ab695a670794f23282ed62
+ARG JOBS=2
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TOOLCHAIN_ROOT=/opt/forge-toolchain
+ENV HOLDIR=${TOOLCHAIN_ROOT}/HOL
+ENV CAKEMLDIR=${TOOLCHAIN_ROOT}/cakeml
+ENV PATH=${HOLDIR}/bin:/usr/local/bin:/usr/bin:/bin
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      autoconf automake build-essential ca-certificates curl git \
+      libffi-dev libgmp-dev libtool pkg-config python3 \
+      binutils-aarch64-linux-gnu qemu-user-static \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1. Build pinned upstream Poly/ML 5.9.1
+RUN mkdir -p /tmp/polyml-src \
+    && git clone --depth 1 --branch "v${POLYML_VERSION}" \
+         https://github.com/polyml/polyml.git /tmp/polyml-src \
+    && cd /tmp/polyml-src \
+    && ./configure --prefix=/usr/local --enable-shared \
+    && make -j "${JOBS}" \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/polyml-src \
+    && poly -v
+
+# 2. Build pinned upstream HOL4 (stdknl)
+RUN mkdir -p "${TOOLCHAIN_ROOT}" \
+    && git clone https://github.com/HOL-Theorem-Prover/HOL.git "${HOLDIR}" \
+    && git -C "${HOLDIR}" checkout "${HOL4_COMMIT}" \
+    && cd "${HOLDIR}" \
+    && poly < tools/smart-configure.sml \
+    && bin/build -j "${JOBS}" \
+    && cd "${HOLDIR}/examples/l3-machine-code/arm8/step" \
+    && Holmake -j 1
+
+# 3. Build pinned upstream CakeML ARM8 proofs, heap, and eval_cake_compile_arm8Lib
+RUN git clone https://github.com/CakeML/cakeml.git "${CAKEMLDIR}" \
+    && git -C "${CAKEMLDIR}" checkout "${CAKEML_COMMIT}" \
+    && cd "${CAKEMLDIR}/cv_translator" \
+    && Holmake -j 1 cake_compile_heap \
+    && cd "${CAKEMLDIR}/basis" \
+    && Holmake -j 1 Word8ArrayProofTheory.uo \
+    && cd "${CAKEMLDIR}/compiler/backend/arm8/proofs" \
+    && Holmake -j 1 \
+    && cd "${CAKEMLDIR}/compiler/backend/arm8" \
+    && Holmake -j 1 eval_cake_compile_arm8Lib.uo \
+    && rm -rf "${HOLDIR}/.git" "${CAKEMLDIR}/.git"
+
+WORKDIR /workspace
+CMD ["/bin/bash"]

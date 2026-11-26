@@ -1,18 +1,18 @@
 # Verified Theorem Catalog
 
 > **Auto-generated directly from compiled HOL4 `.dat` theory files** by `scripts/export_theorem_catalog.sml`.
-> **Mid-milestone checkpoint snapshot** (`pending` downstream theories remain; final `scripts/iron_law.py` requires 100% compiled and zero `pending`).
+> Verified byte-for-byte on every run of `scripts/iron_law.py`. Do not hand-edit this file.
 
 ## Global HOL4 Kernel Tag Summary
 
 | Metric | Measured Kernel Value |
 | --- | --- |
-| Top-level theory | `forge_m1Kernel` (checkpoint — pending) |
-| `forge_*` theories compiled | `6` (`1` pending) |
-| Transitive ancestry closure size | `434` theories |
-| Exported `forge_*` definitions | `110` |
-| Exported `forge_*` theorems | `176` |
-| Total verified `forge_*` items | `286` |
+| Top-level theory | `forge_m1Kernel` |
+| `forge_*` theories compiled | `7` |
+| Transitive ancestry closure size | `435` theories |
+| Exported `forge_*` definitions | `112` |
+| Exported `forge_*` theorems | `182` |
+| Total verified `forge_*` items | `294` |
 | `HYP_COUNT` (max hypotheses across all items) | `0` |
 | `ORACLES` (union of all theorem/definition oracle tags) | `[DISK_THM]` |
 | `DIRECT_AXIOMS` (union of all direct axiom tags) | `[]` |
@@ -38,8 +38,8 @@
 | Boot & Syscall Shim | `forge_shimProof` | `ffirecv16_universal` | `verified` | Universal safety of raw ARM64 ffirecv16 over arbitrary partial reads (1..16B), EINTR retries, truncated <16B EOF, and fatal read errors. |
 | Boot & Syscall Shim | `forge_shimProof` | `ffisend16_universal` | `verified` | Universal safety of raw ARM64 ffisend16 over arbitrary partial writes (1..16B), EINTR retries, and fatal write/EPIPE errors. |
 | Boot & Syscall Shim | `forge_shimProof` | `cake_exit_universal` | `verified` | Universal termination proof of exit veneer + cml_exit to Linux svc #0 exit_group(94) with code 0 or 1. |
-| Non-Vacuity Witness | `forge_m1Kernel` | `forge_m1_nonvacuous` | `pending` | Constructive witness exhibiting a concrete Linux EL0 ARM64 state (TBI0=T, TBI1=F, SA0=T, 16B-aligned SP_EL0) satisfying forge_elf_loaded. |
-| Unified End-to-End | `forge_m1Kernel` | `forge_m1_kernel_correct` | `pending` | Single whole-binary theorem (exact Term.aconv-pinned) connecting _start (0x421000) across RTC whole_step to svc #0 exit_group(94) and counter_run. |
+| Non-Vacuity Witness | `forge_m1Kernel` | `forge_m1_nonvacuous` | `verified` | Constructive witness exhibiting a concrete Linux EL0 ARM64 state (TBI0=T, TBI1=F, SA0=T, 16B-aligned SP_EL0) satisfying forge_elf_loaded. |
+| Unified End-to-End | `forge_m1Kernel` | `forge_m1_kernel_correct` | `verified` | Single whole-binary theorem (exact Term.aconv-pinned) connecting _start (0x421000) across RTC whole_step to svc #0 exit_group(94) and counter_run. |
 
 ## Theory-by-Theory Counts
 
@@ -51,7 +51,7 @@
 | `forge_counterCompile` | Verified Compilation | `verified` | 6 | 4 | 0 | `[DISK_THM]` | `[]` |
 | `forge_arm8Erasure` | ARMv8 Erasure & No-SVC0 | `verified` | 4 | 51 | 0 | `[DISK_THM]` | `[]` |
 | `forge_shimProof` | Boot & Syscall Shim | `verified` | 5 | 43 | 0 | `[DISK_THM]` | `[]` |
-| `forge_m1Kernel` | Unified End-to-End | `pending` | — | — | — | — | — |
+| `forge_m1Kernel` | Unified End-to-End | `verified` | 2 | 6 | 0 | `[DISK_THM]` | `[]` |
 
 ## Verbatim Exported Statements (`DB.definitions` & `DB.theorems`)
 
@@ -2781,6 +2781,154 @@ Exact ARMv8 step equivalence under real EL0 bits (TBI0/TBI1/SA0) and proof that 
     (∀a. base ≤₊ a ∧ a <₊ base + n2w (4 * LENGTH ws) ⇒ m1 a = m2 a) ∧
     w2n base + 4 * LENGTH ws < dimword (:64) ⇒
     (words32_in_mem base ws m1 ⇔ words32_in_mem base ws m2)
+```
+
+</details>
+
+<details>
+<summary><strong><code>forge_m1Kernel</code></strong> — Unified End-to-End (2 definitions, 6 theorems)</summary>
+
+Whole-binary ARM64 execution theorem from _start (0x421000) to svc #0 exit_group(94) and non-vacuity witness.
+
+### Definitions
+
+#### `forge_m1Kernel.mk_prefix_P_def`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀posts k idx bs s s'. mk_prefix_P posts k idx bs s s' ⇔ k < LENGTH posts ∧ s' = posts❲k❳
+```
+
+#### `forge_m1Kernel.noerr_ffi_P_def`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀tail_bs k idx new_bs s s'.
+    noerr_ffi_P tail_bs k idx new_bs s s' ⇔
+    idx = 0 ∧
+    (∃bytes2.
+       read_bytearray (s.REG 2w) (w2n (s.REG 3w))
+         (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+       (w2n (s.REG 3w) < 17 ⇒
+        ∀inp out. (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (inp,out,s) (inp,out,s')) ∧
+       (17 ≤ w2n (s.REG 3w) ⇒
+        ∀inp out.
+          (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (inp,out,s)
+            (inp,out ++ TAKE 16 (DROP 1 bytes2),s'))) ∨
+    idx = 1 ∧
+    ∃bytes2.
+      read_bytearray (s.REG 2w) (w2n (s.REG 3w))
+        (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+      (w2n (s.REG 3w) < 17 ⇒
+       ∀inp out. (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (inp,out,s) (inp,out,s')) ∧
+      (17 ≤ w2n (s.REG 3w) ∧ HD new_bs = 0w ⇒
+       ∀rest out.
+         (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳
+           (TAKE 16 (DROP 1 new_bs) ++ rest,out,s) (rest,out,s')) ∧
+      (17 ≤ w2n (s.REG 3w) ∧ HD new_bs ≠ 0w ⇒
+       ∀out. (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (tail_bs,out,s) ([],out,s'))
+```
+
+### Theorems
+
+#### `forge_m1Kernel.forge_compile_exact`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀ms0 io ffi_if inst_if.
+    forge_elf_loaded code data ms0 ∧ io.outputs = [] ∧ real_interfer_ok (bits_of ms0) ffi_if inst_if ⇒
+    (let
+       ms1 = FUNPOW Next 43 ms0;
+       rmc = real_mc (bits_of ms0) (forge_mc_with ffi_if inst_if)
+     in
+       rmc.target = arm8_target_real (bits_of ms0) ∧ ¬machine_sem rmc (counter_ffi io) ms1 Fail ∧
+       (∀j. FST (evaluate rmc (counter_ffi io) j ms1) ≠ Error) ∧
+       (∃ck t ms_end st_end.
+          evaluate rmc (counter_ffi io) ck ms1 = (Halt t,ms_end,st_end) ∧
+          stop_after_err st_end.io_events ∧
+          (t = Success ∧
+           sent_frames_of st_end.io_events =
+           limit_frames io.write_limit (SND (SND (counter_run 0w 0w io.inputs))) ∨
+           t = Resource_limit_hit ∧
+           sent_frames_of st_end.io_events ≼
+           limit_frames io.write_limit (SND (SND (counter_run 0w 0w io.inputs))))) ∧
+       ∀ck t ms_end st_end.
+         evaluate rmc (counter_ffi io) ck ms1 = (Halt t,ms_end,st_end) ⇒
+         stop_after_err st_end.io_events ∧
+         (t = Success ∧
+          sent_frames_of st_end.io_events =
+          limit_frames io.write_limit (SND (SND (counter_run 0w 0w io.inputs))) ∨
+          t = Resource_limit_hit ∧
+          sent_frames_of st_end.io_events ≼
+          limit_frames io.write_limit (SND (SND (counter_run 0w 0w io.inputs)))))
+```
+
+#### `forge_m1Kernel.forge_ffi_names_eq`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀ffi_if inst_if. info.lab_conf.ffi_names = SOME (forge_mc_with ffi_if inst_if).ffi_names
+```
+
+#### `forge_m1Kernel.forge_ffis_eval`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ffis = [«send16»; «recv16»]
+```
+
+#### `forge_m1Kernel.forge_installed_exact`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀ms0 ffi_if inst_if.
+    forge_elf_loaded code data ms0 ∧ real_interfer_ok (bits_of ms0) ffi_if inst_if ⇒
+    (let
+       ms1 = FUNPOW Next 43 ms0;
+       emc = erase_mc (bits_of ms0) (forge_mc_with ffi_if inst_if)
+     in
+       det_run 43 ms0 ms1 ∧ ms1.PC = FORGE_CAKE_MAIN ∧ bits_of ms1 = bits_of ms0 ∧
+       ms1.SP_EL0 = ms0.SP_EL0 ∧ sp_ok ms1 ∧ arm8_ok (erase ms1) ∧ shim_loaded ms1.MEM ∧
+       installed code FORGE_CBSPACE data 0 info.lab_conf.ffi_names (1,3) emc [] (erase ms1))
+```
+
+#### `forge_m1Kernel.forge_m1_kernel_correct`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀ms0.
+    forge_elf_loaded code data ms0 ⇒
+    (let
+       ms1 = FUNPOW Next 43 ms0
+     in
+       (∀io ffi_if inst_if.
+          io.outputs = [] ∧ real_interfer_ok (bits_of ms0) ffi_if inst_if ⇒
+          (let
+             rmc = real_mc (bits_of ms0) (forge_mc_with ffi_if inst_if)
+           in
+             rmc.target = arm8_target_real (bits_of ms0) ∧
+             ¬machine_sem rmc (counter_ffi io) ms1 Fail)) ∧
+       (∀inp. ∃inp_f out_f ms_f exit_code.
+          (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (inp,[],ms0) (inp_f,out_f,ms_f) ∧
+          svc_exit_group_rel exit_code ms_f) ∧
+       (∀inp inp_f out_f ms_f exit_code.
+          (whole_step svc_read_rel svc_write_rel)꙳ (inp,[],ms0) (inp_f,out_f,ms_f) ∧
+          svc_exit_group_rel exit_code ms_f ⇒
+          (exit_code = 0w ∨ exit_code = 1w ∨ exit_code = 2w) ∧
+          out_f ≼ FLAT (SND (SND (counter_run 0w 0w (chunks16 inp))))) ∧
+       ∀inp inp_f out_f ms_f exit_code.
+         (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (inp,[],ms0) (inp_f,out_f,ms_f) ∧
+         svc_exit_group_rel exit_code ms_f ∧ exit_code = 0w ⇒
+         out_f = FLAT (SND (SND (counter_run 0w 0w (chunks16 inp)))))
+```
+
+#### `forge_m1Kernel.forge_m1_nonvacuous`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∃ms0.
+    forge_elf_loaded code data ms0 ∧ ms0.TCR_EL1.TBI0 ∧ ¬ms0.TCR_EL1.TBI1 ∧ ms0.SCTLR_EL1.SA0 ∧
+    aligned 4 ms0.SP_EL0
 ```
 
 </details>
