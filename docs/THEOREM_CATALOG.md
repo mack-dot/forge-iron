@@ -8,11 +8,11 @@
 | Metric | Measured Kernel Value |
 | --- | --- |
 | Top-level theory | `forge_m1Kernel` (checkpoint — pending) |
-| `forge_*` theories compiled | `5` (`2` pending) |
-| Transitive ancestry closure size | `336` theories |
-| Exported `forge_*` definitions | `105` |
-| Exported `forge_*` theorems | `133` |
-| Total verified `forge_*` items | `238` |
+| `forge_*` theories compiled | `6` (`1` pending) |
+| Transitive ancestry closure size | `434` theories |
+| Exported `forge_*` definitions | `110` |
+| Exported `forge_*` theorems | `176` |
+| Total verified `forge_*` items | `286` |
 | `HYP_COUNT` (max hypotheses across all items) | `0` |
 | `ORACLES` (union of all theorem/definition oracle tags) | `[DISK_THM]` |
 | `DIRECT_AXIOMS` (union of all direct axiom tags) | `[]` |
@@ -34,10 +34,10 @@
 | ARMv8 Erasure & No-SVC0 | `forge_arm8Erasure` | `encoded_bytes_in_mem_not_svc0` | `verified` | No compiled CakeML arm8_config instruction ever encodes the AArch64 svc #0 opcode (0xD4000001). |
 | ARMv8 Erasure & No-SVC0 | `forge_arm8Erasure` | `arm8_target_exact_encoder_correct` | `verified` | Exact arm8$Next encoder correctness proving zero CPU exceptions and strict SP_EL0 preservation on every compiled instruction. |
 | ARMv8 Erasure & No-SVC0 | `forge_arm8Erasure` | `machine_sem_real_eq_exact` | `verified` | Unconditional equivalence between real-bits arm8_target_real (TBI0/TBI1/SA0) and erased targetSem with zero b ≠ Fail escape hatch. |
-| Boot & Syscall Shim | `forge_shimProof` | `startup_to_cake_main` | `pending` | Exact 43-step ARM64 proof from _start (0x421000) through cml_main to cake_main (0x4000B0) setting heap/stack/codebuffer headers. |
-| Boot & Syscall Shim | `forge_shimProof` | `ffirecv16_universal` | `pending` | Universal safety of raw ARM64 ffirecv16 over arbitrary partial reads (1..16B), EINTR retries, truncated <16B EOF, and fatal read errors. |
-| Boot & Syscall Shim | `forge_shimProof` | `ffisend16_universal` | `pending` | Universal safety of raw ARM64 ffisend16 over arbitrary partial writes (1..16B), EINTR retries, and fatal write/EPIPE errors. |
-| Boot & Syscall Shim | `forge_shimProof` | `cake_exit_universal` | `pending` | Universal termination proof of exit veneer + cml_exit to Linux svc #0 exit_group(94) with code 0 or 1. |
+| Boot & Syscall Shim | `forge_shimProof` | `startup_to_cake_main` | `verified` | Exact 43-step ARM64 proof from _start (0x421000) through cml_main to cake_main (0x4000B0) setting heap/stack/codebuffer headers. |
+| Boot & Syscall Shim | `forge_shimProof` | `ffirecv16_universal` | `verified` | Universal safety of raw ARM64 ffirecv16 over arbitrary partial reads (1..16B), EINTR retries, truncated <16B EOF, and fatal read errors. |
+| Boot & Syscall Shim | `forge_shimProof` | `ffisend16_universal` | `verified` | Universal safety of raw ARM64 ffisend16 over arbitrary partial writes (1..16B), EINTR retries, and fatal write/EPIPE errors. |
+| Boot & Syscall Shim | `forge_shimProof` | `cake_exit_universal` | `verified` | Universal termination proof of exit veneer + cml_exit to Linux svc #0 exit_group(94) with code 0 or 1. |
 | Non-Vacuity Witness | `forge_m1Kernel` | `forge_m1_nonvacuous` | `pending` | Constructive witness exhibiting a concrete Linux EL0 ARM64 state (TBI0=T, TBI1=F, SA0=T, 16B-aligned SP_EL0) satisfying forge_elf_loaded. |
 | Unified End-to-End | `forge_m1Kernel` | `forge_m1_kernel_correct` | `pending` | Single whole-binary theorem (exact Term.aconv-pinned) connecting _start (0x421000) across RTC whole_step to svc #0 exit_group(94) and counter_run. |
 
@@ -50,7 +50,7 @@
 | `forge_counterProg` | Zero-Basis CakeML | `verified` | 8 | 26 | 0 | `[DISK_THM]` | `[]` |
 | `forge_counterCompile` | Verified Compilation | `verified` | 6 | 4 | 0 | `[DISK_THM]` | `[]` |
 | `forge_arm8Erasure` | ARMv8 Erasure & No-SVC0 | `verified` | 4 | 51 | 0 | `[DISK_THM]` | `[]` |
-| `forge_shimProof` | Boot & Syscall Shim | `pending` | — | — | — | — | — |
+| `forge_shimProof` | Boot & Syscall Shim | `verified` | 5 | 43 | 0 | `[DISK_THM]` | `[]` |
 | `forge_m1Kernel` | Unified End-to-End | `pending` | — | — | — | — | — |
 
 ## Verbatim Exported Statements (`DB.definitions` & `DB.theorems`)
@@ -2220,6 +2220,567 @@ Exact ARMv8 step equivalence under real EL0 bits (TBI0/TBI1/SA0) and proof that 
 
 ```text
 ⊢ ∀x s. write'Mem x (erase s) = erase (write'Mem x s)
+```
+
+</details>
+
+<details>
+<summary><strong><code>forge_shimProof</code></strong> — Boot & Syscall Shim (5 definitions, 43 theorems)</summary>
+
+43-step ELF startup proof plus universal safety and liveness over Linux read(63)/write(64)/exit_group(94) syscalls.
+
+### Definitions
+
+#### `forge_shimProof.det_run_def`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ (∀s s'. det_run 0 s s' ⇔ s' = s) ∧
+  ∀k s s'. det_run (SUC k) s s' ⇔ ∃s1. ¬is_svc0_at s ∧ NextStateARM8 s = SOME s1 ∧ det_run k s1 s'
+```
+
+#### `forge_shimProof.ffi_return_ok_def`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀new_bytes s s'.
+    ffi_return_ok new_bytes s s' ⇔
+    arm8_ok (erase s') ∧ sp_ok s' ∧ bits_of s' = bits_of s ∧ s'.SP_EL0 = s.SP_EL0 ∧
+    shim_loaded s'.MEM ∧ s'.PC = s.REG 30w ∧
+    (∀a. a ∈ forge_prog_addresses ⇒ s'.MEM a = asm_write_bytearray (s.REG 2w) new_bytes s.MEM a) ∧
+    ∀r. MEM r [19; 20; 21; 22; 23; 24; 25; 26; 27; 28] ⇒ s'.REG (n2w r) = s.REG (n2w r)
+```
+
+#### `forge_shimProof.forge_canonical_ffi_post_def`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀new_bytes s.
+    forge_canonical_ffi_post new_bytes s =
+    s with <|PC := s.REG 30w; MEM := asm_write_bytearray (s.REG 2w) new_bytes s.MEM|>
+```
+
+#### `forge_shimProof.forge_real_install_if_def`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀k bytes s.
+    forge_real_install_if k (bytes,s) =
+    s with
+    <|PC := s.REG 30w; REG := s.REG⦇0w ↦ s.REG 2w⦈;
+      MEM := asm_write_bytearray (s.REG 2w) bytes s.MEM|>
+```
+
+#### `forge_shimProof.mk_real_ffi_if_def`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀P k index new_bytes s.
+    mk_real_ffi_if P k (index,new_bytes,s) =
+    if ∃s'. P k index new_bytes s s' ∧ ffi_return_ok new_bytes s s' then
+      @s'. P k index new_bytes s s' ∧ ffi_return_ok new_bytes s s'
+    else forge_canonical_ffi_post new_bytes s
+```
+
+### Theorems
+
+#### `forge_shimProof.asm_write_bytearray_append`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀xs ys p m.
+    asm_write_bytearray p (xs ++ ys) m =
+    asm_write_bytearray p xs (asm_write_bytearray (p + n2w (LENGTH xs)) ys m)
+```
+
+#### `forge_shimProof.asm_write_bytearray_drop1`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀p dm m bs b0.
+    1 ≤ LENGTH bs ∧ read_bytearray p (LENGTH bs) (λa. if a ∈ dm then SOME (m a) else NONE) = SOME bs ⇒
+    asm_write_bytearray p (b0::DROP 1 bs) m = m⦇p ↦ b0⦈
+```
+
+#### `forge_shimProof.asm_write_bytearray_drop17`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀p dm m bs f.
+    17 ≤ LENGTH bs ∧ LENGTH f = 16 ∧
+    read_bytearray p (LENGTH bs) (λa. if a ∈ dm then SOME (m a) else NONE) = SOME bs ⇒
+    asm_write_bytearray p (0w::f ++ DROP 17 bs) m = (asm_write_bytearray (p + 1w) f m)⦇p ↦ 0w⦈
+```
+
+#### `forge_shimProof.asm_write_bytearray_id`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀n p dm m bs.
+    read_bytearray p n (λa. if a ∈ dm then SOME (m a) else NONE) = SOME bs ⇒
+    asm_write_bytearray p bs m = m
+```
+
+#### `forge_shimProof.asm_write_bytearray_read_el`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀xs p m i.
+    LENGTH xs < dimword (:64) ∧ i < LENGTH xs ⇒ asm_write_bytearray p xs m (p + n2w i) = xs❲i❳
+```
+
+#### `forge_shimProof.asm_write_bytearray_unchanged_lt`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀xs p a m. (∀i. i < LENGTH xs ⇒ a ≠ p + n2w i) ⇒ asm_write_bytearray p xs m a = m a
+```
+
+#### `forge_shimProof.cake_exit_to_svc_exit_group`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_EXIT_VENEER ⇒
+      ∃k. (let
+             s1 = FUNPOW Next k s
+           in
+             det_run k s s1 ∧ s1.PC = 0x421128w ∧
+             svc_exit_group_rel (if s.REG 0w = 0w then 0w else 1w) s1 ∧ s1.MEM = s.MEM ∧
+             bits_of s1 = bits_of s ∧ s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.cake_exit_universal`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀rrel wrel n s inp out inp_f out_f ms_f ec.
+    arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_EXIT_VENEER ∧
+    NRC (whole_step rrel wrel) n (inp,out,s) (inp_f,out_f,ms_f) ∧ svc_exit_group_rel ec ms_f ⇒
+    inp_f = inp ∧ out_f = out ∧ ec = if s.REG 0w = 0w then 0w else 1w
+```
+
+#### `forge_shimProof.cake_install_to_svc_exit_group`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_INSTALL_VENEER ⇒
+      (let
+         s1 = FUNPOW Next 3 s
+       in
+         det_run 3 s s1 ∧ s1.PC = 0x421138w ∧ svc_exit_group_rel 2w s1 ∧ s1.MEM = s.MEM ∧
+         bits_of s1 = bits_of s ∧ s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.cake_install_universal`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀rrel wrel n s inp out inp_f out_f ms_f ec.
+    arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_INSTALL_VENEER ∧
+    NRC (whole_step rrel wrel) n (inp,out,s) (inp_f,out_f,ms_f) ∧ svc_exit_group_rel ec ms_f ⇒
+    inp_f = inp ∧ out_f = out ∧ ec = 2w
+```
+
+#### `forge_shimProof.cml_hdr0`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = 0x400014w ∧
+      s.REG 0w = FORGE_CAKE_MAIN ∧ s.REG 1w = FORGE_HEAP ⇒
+      (let
+         s1 = FUNPOW Next 3 s
+       in
+         det_run 3 s s1 ∧ s1.PC = 0x400020w ∧ s1.REG 0w = FORGE_CAKE_MAIN ∧ s1.REG 1w = FORGE_HEAP ∧
+         mem_dword s1.MEM 0x450000w = 0x430018w ∧
+         (∀a. a <₊ 0x450000w ∨ 0x450000w + 8w ≤₊ a ⇒ s1.MEM a = s.MEM a) ∧
+         (∀a. a ∉ forge_heap_hdr_region ⇒ s1.MEM a = s.MEM a) ∧ shim_loaded s1.MEM ∧
+         arm8_ok (erase s1) ∧ sp_ok s1 ∧ bits_of s1 = bits_of s ∧ s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.cml_hdr1`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = 0x400020w ∧
+      s.REG 0w = FORGE_CAKE_MAIN ∧ s.REG 1w = FORGE_HEAP ⇒
+      (let
+         s1 = FUNPOW Next 3 s
+       in
+         det_run 3 s s1 ∧ s1.PC = 0x40002Cw ∧ s1.REG 0w = FORGE_CAKE_MAIN ∧ s1.REG 1w = FORGE_HEAP ∧
+         mem_dword s1.MEM 0x450008w = 0x430F38w ∧
+         (∀a. a <₊ 0x450008w ∨ 0x450008w + 8w ≤₊ a ⇒ s1.MEM a = s.MEM a) ∧
+         (∀a. a ∉ forge_heap_hdr_region ⇒ s1.MEM a = s.MEM a) ∧ shim_loaded s1.MEM ∧
+         arm8_ok (erase s1) ∧ sp_ok s1 ∧ bits_of s1 = bits_of s ∧ s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.cml_hdr2`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = 0x40002Cw ∧
+      s.REG 0w = FORGE_CAKE_MAIN ∧ s.REG 1w = FORGE_HEAP ⇒
+      (let
+         s1 = FUNPOW Next 3 s
+       in
+         det_run 3 s s1 ∧ s1.PC = 0x400038w ∧ s1.REG 0w = FORGE_CAKE_MAIN ∧ s1.REG 1w = FORGE_HEAP ∧
+         mem_dword s1.MEM 0x450010w = 0x430F38w ∧
+         (∀a. a <₊ 0x450010w ∨ 0x450010w + 8w ≤₊ a ⇒ s1.MEM a = s.MEM a) ∧
+         (∀a. a ∉ forge_heap_hdr_region ⇒ s1.MEM a = s.MEM a) ∧ shim_loaded s1.MEM ∧
+         arm8_ok (erase s1) ∧ sp_ok s1 ∧ bits_of s1 = bits_of s ∧ s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.cml_hdr3`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = 0x400038w ∧
+      s.REG 0w = FORGE_CAKE_MAIN ∧ s.REG 1w = FORGE_HEAP ⇒
+      (let
+         s1 = FUNPOW Next 3 s
+       in
+         det_run 3 s s1 ∧ s1.PC = 0x400044w ∧ s1.REG 0w = FORGE_CAKE_MAIN ∧ s1.REG 1w = FORGE_HEAP ∧
+         mem_dword s1.MEM 0x450018w = 0x41234Cw ∧
+         (∀a. a <₊ 0x450018w ∨ 0x450018w + 8w ≤₊ a ⇒ s1.MEM a = s.MEM a) ∧
+         (∀a. a ∉ forge_heap_hdr_region ⇒ s1.MEM a = s.MEM a) ∧ shim_loaded s1.MEM ∧
+         arm8_ok (erase s1) ∧ sp_ok s1 ∧ bits_of s1 = bits_of s ∧ s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.cml_hdr4`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = 0x400044w ∧
+      s.REG 0w = FORGE_CAKE_MAIN ∧ s.REG 1w = FORGE_HEAP ⇒
+      (let
+         s1 = FUNPOW Next 3 s
+       in
+         det_run 3 s s1 ∧ s1.PC = 0x400050w ∧ s1.REG 0w = FORGE_CAKE_MAIN ∧ s1.REG 1w = FORGE_HEAP ∧
+         mem_dword s1.MEM 0x450020w = 0x420000w ∧
+         (∀a. a <₊ 0x450020w ∨ 0x450020w + 8w ≤₊ a ⇒ s1.MEM a = s.MEM a) ∧
+         (∀a. a ∉ forge_heap_hdr_region ⇒ s1.MEM a = s.MEM a) ∧ shim_loaded s1.MEM ∧
+         arm8_ok (erase s1) ∧ sp_ok s1 ∧ bits_of s1 = bits_of s ∧ s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.det_run_add`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀k1 k2 s s1 s2. det_run k1 s s1 ∧ det_run k2 s1 s2 ⇒ det_run (k1 + k2) s s2
+```
+
+#### `forge_shimProof.det_run_compute`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ (∀s s'. det_run 0 s s' ⇔ s' = s) ∧
+  (∀k s s'.
+     det_run <..num comp'n..> s s' ⇔
+     ∃s1. ¬is_svc0_at s ∧ NextStateARM8 s = SOME s1 ∧ det_run (<..num comp'n..> − 1) s1 s') ∧
+  ∀k s s'.
+    det_run <..num comp'n..> s s' ⇔
+    ∃s1. ¬is_svc0_at s ∧ NextStateARM8 s = SOME s1 ∧ det_run <..num comp'n..> s1 s'
+```
+
+#### `forge_shimProof.det_run_funpow`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀k s s'. det_run k s s' ⇒ s' = FUNPOW Next k s
+```
+
+#### `forge_shimProof.det_run_imp_nrc`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀k s s' rrel wrel inp out. det_run k s s' ⇒ NRC (whole_step rrel wrel) k (inp,out,s) (inp,out,s')
+```
+
+#### `forge_shimProof.det_run_imp_rtc`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀k s s' rrel wrel inp out. det_run k s s' ⇒ (whole_step rrel wrel)꙳ (inp,out,s) (inp,out,s')
+```
+
+#### `forge_shimProof.det_run_peel_nrc`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀k s s' rrel wrel n ec inp out inp_f out_f ms_f.
+    det_run k s s' ∧ NRC (whole_step rrel wrel) n (inp,out,s) (inp_f,out_f,ms_f) ∧
+    svc_exit_group_rel ec ms_f ⇒
+    k ≤ n ∧ NRC (whole_step rrel wrel) (n − k) (inp,out,s') (inp_f,out_f,ms_f)
+```
+
+#### `forge_shimProof.ffirecv16_noerr_exists`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s bytes2.
+    arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_FFIRECV16_VENEER ∧
+    aligned 2 (s.REG 30w) ∧ untagged (s.REG 30w) ∧
+    read_bytearray (s.REG 2w) (w2n (s.REG 3w))
+      (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ⇒
+    (w2n (s.REG 3w) < 17 ⇒
+     ∃s'.
+       (∀inp out. (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (inp,out,s) (inp,out,s')) ∧
+       ffi_return_ok bytes2 s s') ∧
+    (∀f. 17 ≤ w2n (s.REG 3w) ∧ LENGTH f = 16 ⇒
+         ∃s'.
+           (∀rest out.
+              (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (f ++ rest,out,s) (rest,out,s')) ∧
+           ffi_return_ok (0w::f ++ DROP 17 bytes2) s s') ∧
+    ∀tail_bs.
+      17 ≤ w2n (s.REG 3w) ∧ LENGTH tail_bs < 16 ⇒
+      ∃s'.
+        (∀out. (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (tail_bs,out,s) ([],out,s')) ∧
+        ffi_return_ok (1w::DROP 1 bytes2) s s'
+```
+
+#### `forge_shimProof.ffirecv16_universal`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀allow_err wrel n s inp out inp_f out_f ms_f ec bytes2.
+    arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_FFIRECV16_VENEER ∧
+    aligned 2 (s.REG 30w) ∧ untagged (s.REG 30w) ∧
+    read_bytearray (s.REG 2w) (w2n (s.REG 3w))
+      (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+    NRC (whole_step (if allow_err then svc_read_rel else svc_read_noerr_rel) wrel) n (inp,out,s)
+      (inp_f,out_f,ms_f) ∧ svc_exit_group_rel ec ms_f ⇒
+    (w2n (s.REG 3w) < 17 ⇒
+     ∃n' s'.
+       n' < n ∧
+       NRC (whole_step (if allow_err then svc_read_rel else svc_read_noerr_rel) wrel) n'
+         (inp,out,s') (inp_f,out_f,ms_f) ∧ ffi_return_ok bytes2 s s') ∧
+    (17 ≤ w2n (s.REG 3w) ⇒
+     (∃n' s' frame inp_after.
+        n' < n ∧ LENGTH frame = 16 ∧ inp = frame ++ inp_after ∧
+        NRC (whole_step (if allow_err then svc_read_rel else svc_read_noerr_rel) wrel) n'
+          (inp_after,out,s') (inp_f,out_f,ms_f) ∧ ffi_return_ok (0w::frame ++ DROP 17 bytes2) s s') ∨
+     ∃n' s' inp_after.
+       n' < n ∧ (allow_err ∨ LENGTH inp < 16) ∧
+       NRC (whole_step (if allow_err then svc_read_rel else svc_read_noerr_rel) wrel) n'
+         (inp_after,out,s') (inp_f,out_f,ms_f) ∧ ffi_return_ok (1w::DROP 1 bytes2) s s')
+```
+
+#### `forge_shimProof.ffisend16_noerr_exists`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s bytes2.
+    arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_FFISEND16_VENEER ∧
+    aligned 2 (s.REG 30w) ∧ untagged (s.REG 30w) ∧
+    read_bytearray (s.REG 2w) (w2n (s.REG 3w))
+      (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ⇒
+    (w2n (s.REG 3w) < 17 ⇒
+     ∃s'.
+       (∀inp out. (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (inp,out,s) (inp,out,s')) ∧
+       ffi_return_ok bytes2 s s') ∧
+    (17 ≤ w2n (s.REG 3w) ⇒
+     ∃s'.
+       (∀inp out.
+          (whole_step svc_read_noerr_rel svc_write_noerr_rel)꙳ (inp,out,s)
+            (inp,out ++ TAKE 16 (DROP 1 bytes2),s')) ∧ ffi_return_ok (0w::DROP 1 bytes2) s s')
+```
+
+#### `forge_shimProof.ffisend16_universal`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀allow_err rrel n s inp out inp_f out_f ms_f ec bytes2.
+    arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_FFISEND16_VENEER ∧
+    aligned 2 (s.REG 30w) ∧ untagged (s.REG 30w) ∧
+    read_bytearray (s.REG 2w) (w2n (s.REG 3w))
+      (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+    NRC (whole_step rrel (if allow_err then svc_write_rel else svc_write_noerr_rel)) n (inp,out,s)
+      (inp_f,out_f,ms_f) ∧ svc_exit_group_rel ec ms_f ⇒
+    (w2n (s.REG 3w) < 17 ⇒
+     ∃n' s'.
+       n' < n ∧
+       NRC (whole_step rrel (if allow_err then svc_write_rel else svc_write_noerr_rel)) n'
+         (inp,out,s') (inp_f,out_f,ms_f) ∧ ffi_return_ok bytes2 s s') ∧
+    (17 ≤ w2n (s.REG 3w) ⇒
+     (∃n' s'.
+        n' < n ∧
+        NRC (whole_step rrel (if allow_err then svc_write_rel else svc_write_noerr_rel)) n'
+          (inp,out ++ TAKE 16 (DROP 1 bytes2),s') (inp_f,out_f,ms_f) ∧
+        ffi_return_ok (0w::DROP 1 bytes2) s s') ∨
+     allow_err ∧
+     ∃n' s' chunk.
+       n' < n ∧ chunk ≼ TAKE 16 (DROP 1 bytes2) ∧
+       NRC (whole_step rrel (if allow_err then svc_write_rel else svc_write_noerr_rel)) n'
+         (inp,out ++ chunk,s') (inp_f,out_f,ms_f) ∧ ffi_return_ok (1w::DROP 1 bytes2) s s')
+```
+
+#### `forge_shimProof.forge_mc_with_lo55`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀ffi_if inst_if. lo55 (forge_mc_with ffi_if inst_if)
+```
+
+#### `forge_shimProof.forge_mc_with_mmio_min`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀ffi_if inst_if. mmio_pcs_min_index (forge_mc_with ffi_if inst_if).ffi_names = SOME 2
+```
+
+#### `forge_shimProof.forge_mc_with_start_pc_ok`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀ffi_if inst_if. start_pc_ok (forge_mc_with ffi_if inst_if) FORGE_CAKE_MAIN
+```
+
+#### `forge_shimProof.forge_regions_disjoint`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ (∀a. a ∈ forge_prog_addresses ⇒ a ∉ forge_shim_code_region) ∧
+  (∀a. a ∈ forge_rx_tmp_region ⇒ a ∉ forge_prog_addresses ∧ a ∉ forge_shim_code_region) ∧
+  (∀a. a ∈ forge_cml_ptrs_region ⇒ a ∉ forge_prog_addresses ∧ a ∉ forge_shim_code_region) ∧
+  (∀a. a ∈ forge_heap_hdr_region ⇒ a ∉ forge_cml_ptrs_region ∧ a ∉ forge_shim_code_region) ∧
+  (∀a. a ∈ forge_prog_addresses ⇒ untagged a) ∧ ∀a. a ∈ forge_shim_code_region ⇒ untagged a
+```
+
+#### `forge_shimProof.mk_real_ffi_if_ok`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀B P. real_interfer_ok B (mk_real_ffi_if P) forge_real_install_if
+```
+
+#### `forge_shimProof.read_bytearray_mem_eq`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀n p dm m bs.
+    read_bytearray p n (λa. if a ∈ dm then SOME (m a) else NONE) = SOME bs ⇒
+    LENGTH bs = n ∧ ∀i. i < n ⇒ p + n2w i ∈ dm ∧ m (p + n2w i) = bs❲i❳
+```
+
+#### `forge_shimProof.real_interfer_ok_imp_erase_ok`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀B ffi_if inst_if.
+    real_interfer_ok B ffi_if inst_if ⇒
+    ffi_interfer_ok FORGE_CAKE_MAIN (erase_mc B (forge_mc_with ffi_if inst_if)) ∧
+    install_interfer_ok FORGE_CAKE_MAIN FORGE_CBSPACE (erase_mc B (forge_mc_with ffi_if inst_if)) ∧
+    interference_ok (erase_mc B (forge_mc_with ffi_if inst_if)).next_interfer
+      ((erase_mc B (forge_mc_with ffi_if inst_if)).target.proj forge_prog_addresses)
+```
+
+#### `forge_shimProof.shim_loaded_cong`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀m1 m2. (∀a. a ∈ forge_shim_code_region ⇒ m1 a = m2 a) ⇒ (shim_loaded m1 ⇔ shim_loaded m2)
+```
+
+#### `forge_shimProof.start_16_steps`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_SHIM_BASE ⇒
+      (let
+         s1 = FUNPOW Next 16 s
+       in
+         det_run 16 s s1 ∧ s1.PC = FORGE_VENEERS_BASE ∧
+         mem_dword s1.MEM FORGE_CML_HEAP = FORGE_HEAP ∧
+         mem_dword s1.MEM FORGE_CML_STACK = FORGE_STACK ∧
+         mem_dword s1.MEM FORGE_CML_STACKEND = FORGE_STACKEND ∧
+         (∀a. a ∉ forge_cml_ptrs_region ⇒ s1.MEM a = s.MEM a) ∧ shim_loaded s1.MEM ∧
+         arm8_ok (erase s1) ∧ sp_ok s1 ∧ bits_of s1 = bits_of s ∧ s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.startup_to_cake_main`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s. arm8_ok (erase s) ∧ sp_ok s ∧ shim_loaded s.MEM ∧ s.PC = FORGE_SHIM_BASE ⇒
+      (let
+         s1 = FUNPOW Next 43 s
+       in
+         det_run 43 s s1 ∧ s1.PC = FORGE_CAKE_MAIN ∧ s1.REG 0w = FORGE_CAKE_MAIN ∧
+         s1.REG 1w = FORGE_HEAP ∧ s1.REG 2w = FORGE_STACK ∧ s1.REG 3w = FORGE_STACKEND ∧
+         mem_dword s1.MEM FORGE_HEAP = FORGE_CAKE_BITMAPS ∧
+         mem_dword s1.MEM (FORGE_HEAP + 8w) = FORGE_BM_BUF_END ∧
+         mem_dword s1.MEM (FORGE_HEAP + 16w) = FORGE_BM_BUF_END ∧
+         mem_dword s1.MEM (FORGE_HEAP + 24w) = FORGE_CB_BEGIN ∧
+         mem_dword s1.MEM (FORGE_HEAP + 32w) = FORGE_CB_END ∧
+         (∀a. a ∉ forge_cml_ptrs_region ∧ a ∉ forge_heap_hdr_region ⇒ s1.MEM a = s.MEM a) ∧
+         shim_loaded s1.MEM ∧ arm8_ok (erase s1) ∧ sp_ok s1 ∧ bits_of s1 = bits_of s ∧
+         s1.SP_EL0 = s.SP_EL0)
+```
+
+#### `forge_shimProof.svc_read_noerr_imp_rel`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀inp s s' rest. svc_read_noerr_rel inp s s' rest ⇒ svc_read_rel inp s s' rest
+```
+
+#### `forge_shimProof.svc_write_noerr_imp_rel`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀s s' out. svc_write_noerr_rel s s' out ⇒ svc_write_rel s s' out
+```
+
+#### `forge_shimProof.whole_step_arm8_det`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀rrel wrel inp out s inp' out' s' s1.
+    ¬is_svc0_at s ∧ NextStateARM8 s = SOME s1 ⇒
+    (whole_step rrel wrel (inp,out,s) (inp',out',s') ⇔ inp' = inp ∧ out' = out ∧ s' = s1)
+```
+
+#### `forge_shimProof.whole_step_exit_stuck`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀rrel wrel ec inp out s y. svc_exit_group_rel ec s ⇒ ¬whole_step rrel wrel (inp,out,s) y
+```
+
+#### `forge_shimProof.whole_step_nrc_exit_stuck`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀rrel wrel n ec inp out s y.
+    svc_exit_group_rel ec s ∧ NRC (whole_step rrel wrel) n (inp,out,s) y ⇒ n = 0 ∧ y = (inp,out,s)
+```
+
+#### `forge_shimProof.whole_step_svc_read_det`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀rrel wrel inp out s inp' out' s'.
+    is_svc0_at s ∧ s.REG 8w = 63w ⇒
+    (whole_step rrel wrel (inp,out,s) (inp',out',s') ⇔ rrel inp s s' inp' ∧ out' = out)
+```
+
+#### `forge_shimProof.whole_step_svc_write_det`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀rrel wrel inp out s inp' out' s'.
+    is_svc0_at s ∧ s.REG 8w = 64w ⇒
+    (whole_step rrel wrel (inp,out,s) (inp',out',s') ⇔
+     ∃chunk. wrel s s' chunk ∧ inp' = inp ∧ out' = out ++ chunk)
+```
+
+#### `forge_shimProof.words32_in_mem_cong`
+- Kernel tags: `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`
+
+```text
+⊢ ∀ws base m1 m2.
+    (∀a. base ≤₊ a ∧ a <₊ base + n2w (4 * LENGTH ws) ⇒ m1 a = m2 a) ∧
+    w2n base + 4 * LENGTH ws < dimword (:64) ⇒
+    (words32_in_mem base ws m1 ⇔ words32_in_mem base ws m2)
 ```
 
 </details>
