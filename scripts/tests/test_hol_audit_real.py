@@ -219,28 +219,24 @@ QED
     ),
     (
         "weakened_nonvac",
-        COMMON_HEADER.format(name="weakened_nonvac")
-        + r"""
+        r"""Theory forge_neg_weakened_nonvac
+Ancestors
+  forge_m1Kernel forge_counterSpec forge_contractSpec forge_counterCompile targetSem relation alignment arm8
+Libs
+  preamble
+
 Theorem forge_m1_nonvacuous:
   ∃ms0:arm8_state.
+    forge_elf_loaded code data ms0 ∧
     ms0.TCR_EL1.TBI0 ∧ ¬ms0.TCR_EL1.TBI1 ∧
     ms0.SCTLR_EL1.SA0
 Proof
-  qexists_tac `(ARB:arm8_state) with <|
-    SCTLR_EL1 := ((ARB:SCTLRType) with SA0 := T);
-    TCR_EL1 := ((ARB:TCR_EL1) with <| TBI0 := T; TBI1 := F |>) |>`
-  \\ simp []
+  mp_tac forge_m1KernelTheory.forge_m1_nonvacuous \\ metis_tac []
 QED
 
-Theorem forge_m1_kernel_correct:
-  ∀ms0:arm8_state.
-    forge_elf_loaded code data ms0 ⇒
-      (real_mc (bits_of ms0) (forge_mc_with ARB ARB)).target = arm8_target_real (bits_of ms0)
-Proof
-  simp [real_mc_def]
-QED
+Theorem forge_m1_kernel_correct = forge_m1KernelTheory.forge_m1_kernel_correct;
 """,
-        "EXACT_TERM_MISMATCH",
+        "EXACT_TERM_MISMATCH on forge_neg_weakened_nonvac.forge_m1_nonvacuous",
     ),
     (
         "weakened_exit_code",
