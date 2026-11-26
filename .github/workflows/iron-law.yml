@@ -1,0 +1,93 @@
+name: iron-law
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  gate-self-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/tests/test_iron_law.py
+  end-to-end:
+    # Required check. Never mark optional or continue-on-error.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      POLYML_VERSION: 5.9.1
+      HOL4_COMMIT: 9783a49979c94c401ff8c0e51b2eefae7ea95ae3
+      CAKEML_COMMIT: cd9155694c16831373ab695a670794f23282ed62
+      TOOLCHAIN_ROOT: /home/runner/forge-toolchain
+      HOLDIR: /home/runner/forge-toolchain/HOL
+      CAKEMLDIR: /home/runner/forge-toolchain/cakeml
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk space for HOL4 + CakeML build
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+      - name: Install build dependencies, AArch64 binutils, and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake build-essential ca-certificates git \
+            libffi-dev libgmp-dev libtool pkg-config \
+            binutils-aarch64-linux-gnu qemu-user-static
+      - name: Cache pinned upstream Poly/ML + HOL4 + CakeML toolchain (zero forge-iron theories)
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TOOLCHAIN_ROOT }}
+          key: poly${{ env.POLYML_VERSION }}-hol4-${{ env.HOL4_COMMIT }}-cakeml-${{ env.CAKEML_COMMIT }}-u2404-v3
+      - name: Build pinned upstream Poly/ML 5.9.1 + HOL4 + CakeML on cache miss
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$TOOLCHAIN_ROOT"
+          # 1. Build upstream Poly/ML 5.9.1 (with GMP intinf matching CakeML upstream)
+          git clone --depth 1 --branch "v${POLYML_VERSION}" \
+            https://github.com/polyml/polyml.git /tmp/polyml-src
+          (
+            cd /tmp/polyml-src
+            ./configure --prefix="$TOOLCHAIN_ROOT/polyml" --enable-shared --enable-intinf-as-int
+            make -j 2
+            make compiler
+            make install
+          )
+          rm -rf /tmp/polyml-src
+          export PATH="$TOOLCHAIN_ROOT/polyml/bin:$PATH"
+          export LD_LIBRARY_PATH="$TOOLCHAIN_ROOT/polyml/lib:${LD_LIBRARY_PATH:-}"
+          poly -v
+          # 2. Build upstream HOL4 (stdknl) and L3 ARMv8 step library
+          git clone https://github.com/HOL-Theorem-Prover/HOL.git "$HOLDIR"
+          git -C "$HOLDIR" checkout "$HOL4_COMMIT"
+          (cd "$HOLDIR" && poly < tools/smart-configure.sml && bin/build -j 2)
+          export PATH="$HOLDIR/bin:$PATH"
+          (cd "$HOLDIR/examples/l3-machine-code/arm8/step" && Holmake -j 1 arm8_stepLib.uo)
+          # 3. Build upstream CakeML heaps, basis/CF libraries, and ARM8 proofs
+          #    (explicit targets avoid CakeML README.md generation requiring developers/readme_gen)
+          git clone https://github.com/CakeML/cakeml.git "$CAKEMLDIR"
+          git -C "$CAKEMLDIR" checkout "$CAKEML_COMMIT"
+          (cd "$CAKEMLDIR/misc" && Holmake -j 1 cakeml-heap)
+          (cd "$CAKEMLDIR/characteristic" && Holmake -j 1 cfMainTheory.uo cfLib.uo cfTacticsLib.uo)
+          (cd "$CAKEMLDIR/basis" && Holmake -j 1 Word8ArrayProofTheory.uo basisFunctionsLib.uo)
+          (cd "$CAKEMLDIR/compiler/backend/arm8/proofs" && Holmake -j 1 arm8_configProofTheory.uo)
+          (cd "$CAKEMLDIR/cv_translator" && Holmake -j 1 cake_compile_heap)
+          rm -rf "$HOLDIR/.git" "$CAKEMLDIR/.git"
+      - name: Clean all forge_* theories and run Iron Law gate
+        run: |
+          set -euo pipefail
+          export PATH="$HOLDIR/bin:$TOOLCHAIN_ROOT/polyml/bin:$PATH"
+          export LD_LIBRARY_PATH="$TOOLCHAIN_ROOT/polyml/lib:${LD_LIBRARY_PATH:-}"
+          (cd kernel/hol4 && Holmake cleanAll)
+          python3 scripts/iron_law.py
+      - name: Run real HOL4 kernel Term.aconv negative controls
+        run: |
+          set -euo pipefail
+          export PATH="$HOLDIR/bin:$TOOLCHAIN_ROOT/polyml/bin:$PATH"
+          export LD_LIBRARY_PATH="$TOOLCHAIN_ROOT/polyml/lib:${LD_LIBRARY_PATH:-}"
+          python3 scripts/tests/test_hol_audit_real.py
+      - name: Run ARM64 black-box smoke suite under QEMU
+        run: python3 scripts/smoke_m1.py --qemu qemu-aarch64-static kernel/build/forge-kernel

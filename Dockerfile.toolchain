@@ -1,0 +1,70 @@
+# Reproducible Upstream-Only HOL4 + CakeML ARM64 Toolchain Image
+#
+# Contains ONLY pinned upstream Poly/ML 5.9.1, HOL4, CakeML (with prebuilt
+# arm8 backend proofs, characteristic/basis libraries, and cake_compile_heap),
+# AArch64 binutils, and QEMU user-mode emulation.
+#
+# Contains ZERO forge-iron sources and ZERO forge_* theories. Every forge_*
+# proof and binary artifact is built fresh from `Holmake cleanAll` at CI/audit
+# time.
+
+FROM ubuntu:24.04
+
+ARG POLYML_VERSION=5.9.1
+ARG HOL4_COMMIT=9783a49979c94c401ff8c0e51b2eefae7ea95ae3
+ARG CAKEML_COMMIT=cd9155694c16831373ab695a670794f23282ed62
+ARG JOBS=2
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TOOLCHAIN_ROOT=/opt/forge-toolchain
+ENV HOLDIR=${TOOLCHAIN_ROOT}/HOL
+ENV CAKEMLDIR=${TOOLCHAIN_ROOT}/cakeml
+ENV PATH=${HOLDIR}/bin:/usr/local/bin:/usr/bin:/bin
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      autoconf automake build-essential ca-certificates curl git \
+      libffi-dev libgmp-dev libtool pkg-config python3 \
+      binutils-aarch64-linux-gnu qemu-user-static \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1. Build pinned upstream Poly/ML 5.9.1 (with GMP intinf matching CakeML upstream)
+RUN mkdir -p /tmp/polyml-src \
+    && git clone --depth 1 --branch "v${POLYML_VERSION}" \
+         https://github.com/polyml/polyml.git /tmp/polyml-src \
+    && cd /tmp/polyml-src \
+    && ./configure --prefix=/usr/local --enable-shared --enable-intinf-as-int \
+    && make -j "${JOBS}" \
+    && make compiler \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/polyml-src \
+    && poly -v
+
+# 2. Build pinned upstream HOL4 (stdknl) and L3 ARMv8 step library
+RUN mkdir -p "${TOOLCHAIN_ROOT}" \
+    && git clone https://github.com/HOL-Theorem-Prover/HOL.git "${HOLDIR}" \
+    && git -C "${HOLDIR}" checkout "${HOL4_COMMIT}" \
+    && cd "${HOLDIR}" \
+    && poly < tools/smart-configure.sml \
+    && bin/build -j "${JOBS}" \
+    && cd "${HOLDIR}/examples/l3-machine-code/arm8/step" \
+    && Holmake -j 1 arm8_stepLib.uo
+
+# 3. Build pinned upstream CakeML heaps, basis/CF libraries, and ARM8 proofs
+#    (explicit targets avoid CakeML README.md generation requiring developers/readme_gen)
+RUN git clone https://github.com/CakeML/cakeml.git "${CAKEMLDIR}" \
+    && git -C "${CAKEMLDIR}" checkout "${CAKEML_COMMIT}" \
+    && cd "${CAKEMLDIR}/misc" \
+    && Holmake -j 1 cakeml-heap \
+    && cd "${CAKEMLDIR}/characteristic" \
+    && Holmake -j 1 cfMainTheory.uo cfLib.uo cfTacticsLib.uo \
+    && cd "${CAKEMLDIR}/basis" \
+    && Holmake -j 1 Word8ArrayProofTheory.uo basisFunctionsLib.uo \
+    && cd "${CAKEMLDIR}/compiler/backend/arm8/proofs" \
+    && Holmake -j 1 arm8_configProofTheory.uo \
+    && cd "${CAKEMLDIR}/cv_translator" \
+    && Holmake -j 1 cake_compile_heap \
+    && rm -rf "${HOLDIR}/.git" "${CAKEMLDIR}/.git"
+
+WORKDIR /workspace
+CMD ["/bin/bash"]

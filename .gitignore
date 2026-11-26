@@ -1,0 +1,13 @@
+.hol/
+*.dumpedheap
+*Theory.sml
+*Theory.sig
+*Theory.dat
+*Theory.ui
+*Theory.uo
+*Script.ui
+*Script.uo
+kernel/hol4/counter_arm8.S
+kernel/build/*.o
+__pycache__/
+*.pyc
