@@ -33,6 +33,10 @@ end_to_end=true only if ALL of these hold:
      all vaddrs < 2^55 (P-LO55), exact e_entry and RX/RW PT_LOAD vaddr/memsz
      binding against theorem_layout.txt, zero unverified gap bytes across 100%
      of PF_X, and byte-for-byte equality against all HOL4-extracted blobs.
+  8. Automated kernel-verified theorem catalog (`scripts/export_theorem_catalog.sml`)
+     re-exports all compiled `forge_*` theories into a temporary file and
+     matches `docs/THEOREM_CATALOG.md` byte-for-byte (preventing stale or
+     hand-edited theorem claims).
 
 Any other case prints end_to_end=false with a reason and exits 1.
 """
@@ -54,6 +58,7 @@ REQUIRED = (
     "binary",
     "hash_file",
     "spec_hashes",
+    "theorem_catalog",
     "audit_theory",
     "audit_theorem",
     "nonvacuous_theorem",
@@ -200,6 +205,7 @@ def main(argv: list[str]) -> int:
         binary = inside(root, m["binary"])
         hash_file = inside(root, m["hash_file"])
         spec_hashes_file = inside(root, m["spec_hashes"])
+        catalog_file = inside(root, m["theorem_catalog"])
     except ValueError as e:
         return fail(f"BAD_MANIFEST ({e})")
     if not hol_dir.is_dir():
@@ -285,6 +291,41 @@ def main(argv: list[str]) -> int:
         t_shim = (out_dir / "theorem_shim.bin").read_bytes()
         t_data = (out_dir / "theorem_data.bin").read_bytes()
         layout_text = layout_file.read_text()
+
+        # Verify docs/THEOREM_CATALOG.md is byte-for-byte up-to-date with compiled theories
+        catalog_script = Path(__file__).resolve().parent / "export_theorem_catalog.sml"
+        if not catalog_script.is_file():
+            return fail("CATALOG_SCRIPT_MISSING (scripts/export_theorem_catalog.sml)")
+        if not catalog_file.is_file():
+            return fail(f"THEOREM_CATALOG_MISSING ({m['theorem_catalog']})")
+        gen_catalog = out_dir / "THEOREM_CATALOG.md"
+        cat_env = dict(os.environ)
+        cat_env.update(
+            {
+                "FORGE_AUDIT_THEORY": m["audit_theory"],
+                "FORGE_CATALOG_OUT": str(gen_catalog),
+            }
+        )
+        cr = subprocess.run(
+            hol_cmd,
+            cwd=hol_dir,
+            env=cat_env,
+            stdin=catalog_script.open("rb"),
+            capture_output=True,
+            text=True,
+        )
+        if cr.returncode != 0 or "CATALOG_EXPORT_OK" not in cr.stdout or not gen_catalog.is_file():
+            detail = (cr.stderr or cr.stdout).strip().splitlines()
+            msg = detail[-1] if detail else f"exit {cr.returncode}"
+            return fail(f"CATALOG_EXPORT_FAILED ({msg})")
+        want_cat_bytes = gen_catalog.read_bytes()
+        got_cat_bytes = catalog_file.read_bytes()
+        if got_cat_bytes != want_cat_bytes:
+            got_h = hashlib.sha256(got_cat_bytes).hexdigest()[:16]
+            want_h = hashlib.sha256(want_cat_bytes).hexdigest()[:16]
+            return fail(
+                f"THEOREM_CATALOG_MISMATCH ({m['theorem_catalog']} sha256:{got_h} != generated:{want_h})"
+            )
 
     if not hash_file.is_file():
         return fail("HASH_FILE_MISSING (the proof build did not write it)")

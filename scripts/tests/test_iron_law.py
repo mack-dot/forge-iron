@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Negative controls for the Iron Law gate (38 cases: 12 original + 26 M1/Pass-1 controls).
+"""Negative controls for the Iron Law gate (41 cases: 12 original + 29 M1/Pass-1/Catalog controls).
 
 Each case builds a scratch repository with a synthetic valid static AArch64 ELF64,
-pinned spec SHA-256 files, and fake Holmake/hol tools to test the gate logic
-deterministically without requiring HOL4. Real HOL4 kernel auditor exact
-Term.aconv negative controls run in `scripts/tests/test_hol_audit_real.py`.
+pinned spec SHA-256 files, verified theorem catalog, and fake Holmake/hol tools
+to test the gate logic deterministically without requiring HOL4. Real HOL4 kernel
+auditor exact Term.aconv negative controls run in `scripts/tests/test_hol_audit_real.py`.
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ MANIFEST = (
     "binary=kernel/build/forge-kernel\n"
     "hash_file=kernel/build/machine_bytes_hash.txt\n"
     "spec_hashes=kernel/SPEC_HASHES.sha256\n"
+    "theorem_catalog=docs/THEOREM_CATALOG.md\n"
     "audit_theory=forge_m1Kernel\n"
     "audit_theorem=forge_m1_kernel_correct\n"
     "nonvacuous_theorem=forge_m1_nonvacuous\n"
@@ -45,6 +46,7 @@ MANIFEST = (
 
 SPEC_COUNTER_TEXT = "Theory forge_counterSpec\nDefinition counter_run_def: counter_run x = x End\n"
 SPEC_CONTRACT_TEXT = "Theory forge_contractSpec\nDefinition forge_elf_loaded_def: forge_elf_loaded x = T End\n"
+GOOD_CATALOG_TEXT = "# Verified Theorem Catalog\n\nSynthetic catalog for gate self-test.\n"
 
 
 def default_layout(
@@ -258,12 +260,19 @@ def make_repo(
     spec_hashes_override: str | None = None,
     spec_counter_text: str = SPEC_COUNTER_TEXT,
     spec_contract_text: str = SPEC_CONTRACT_TEXT,
+    write_catalog: bool = True,
+    catalog_text: str = GOOD_CATALOG_TEXT,
+    catalog_export_exit: int = 0,
+    catalog_export_stdout: str = "CATALOG_EXPORT_OK\n",
 ) -> Path:
     (d / "kernel/proof").mkdir(parents=True)
     (d / "kernel/build").mkdir(parents=True)
     (d / "spec-compiler").mkdir(parents=True)
+    (d / "docs").mkdir(parents=True)
     if manifest is not None:
         (d / "kernel/GATE.manifest").write_text(manifest)
+    if write_catalog:
+        (d / "docs/THEOREM_CATALOG.md").write_text(catalog_text)
     (d / "kernel/proof/counterScript.sml").write_text(script_text)
     (d / "kernel/proof/forge_counterSpecScript.sml").write_text(spec_counter_text)
     (d / "kernel/proof/forge_contractSpecScript.sml").write_text(spec_contract_text)
@@ -304,6 +313,10 @@ def make_repo(
         hol_body = f"""#!{sys.executable}
 import os, sys
 from pathlib import Path
+if "FORGE_CATALOG_OUT" in os.environ:
+    Path(os.environ["FORGE_CATALOG_OUT"]).write_text({GOOD_CATALOG_TEXT!r})
+    sys.stdout.write({catalog_export_stdout!r})
+    sys.exit({catalog_export_exit})
 out = Path(os.environ["FORGE_AUDIT_OUT_DIR"])
 (out / "theorem_veneers.bin").write_bytes({SYN_VENEERS!r})
 (out / "theorem_code.bin").write_bytes({SYN_CODE!r})
@@ -378,6 +391,10 @@ CASES = [
     ("reject: 1-byte mutation in pinned forge_counterSpecScript.sml", {"spec_counter_text": SPEC_COUNTER_TEXT + " "}, True, 1, "SPEC_HASH_MISMATCH"),
     ("reject: 1-byte mutation in pinned forge_contractSpecScript.sml", {"spec_contract_text": SPEC_CONTRACT_TEXT + " "}, True, 1, "SPEC_HASH_MISMATCH"),
     ("reject: HOL auditor flags exact Term.aconv mismatch on nonvacuous", {"hol_audit_exit": 1, "hol_audit_stdout": "HOL_AUDIT_FAIL: EXACT_TERM_MISMATCH on forge_m1Kernel.forge_m1_nonvacuous\n"}, True, 1, "HOL_AUDIT_FAILED"),
+    # Theorem catalog byte-for-byte freshness controls (3 new planted failures)
+    ("reject: missing docs/THEOREM_CATALOG.md", {"write_catalog": False}, True, 1, "THEOREM_CATALOG_MISSING"),
+    ("reject: stale or hand-edited docs/THEOREM_CATALOG.md", {"catalog_text": GOOD_CATALOG_TEXT + "hand-edited claim\n"}, True, 1, "THEOREM_CATALOG_MISMATCH"),
+    ("reject: theorem catalog exporter fails", {"catalog_export_exit": 1, "catalog_export_stdout": "CATALOG_EXPORT_FAIL: bad tag\n"}, True, 1, "CATALOG_EXPORT_FAILED"),
 ]
 
 

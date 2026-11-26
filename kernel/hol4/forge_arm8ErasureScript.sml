@@ -13,36 +13,12 @@
 *)
 Theory forge_arm8Erasure
 Ancestors
-  words arm8 arm8_step targetSem arm8_target alignment state_transformer
+  words arm8 arm8_step targetSem arm8_target arm8_targetProof asmProps alignment
+  state_transformer bitstring forge_contractSpec
 Libs
-  preamble wordsLib blastLib
+  preamble wordsLib blastLib bitstringLib arm8_targetProofLib
 
-(* ---- Definitions ---- *)
-
-Definition erase_def:
-  erase (s:arm8_state) =
-    s with <| TCR_EL1   := s.TCR_EL1 with <| TBI0 := F; TBI1 := F |>;
-              SCTLR_EL1 := s.SCTLR_EL1 with SA0 := F |>
-End
-
-Definition bits_of_def:
-  bits_of (s:arm8_state) = (s.TCR_EL1.TBI0, s.TCR_EL1.TBI1, s.SCTLR_EL1.SA0)
-End
-
-Definition restore_def:
-  restore (B:bool # bool # bool) (s:arm8_state) =
-    s with <| TCR_EL1   := s.TCR_EL1 with <| TBI0 := FST B; TBI1 := FST (SND B) |>;
-              SCTLR_EL1 := s.SCTLR_EL1 with SA0 := SND (SND B) |>
-End
-
-Definition untagged_def:
-  untagged (a:word64) ⇔ ((63 >< 55) a = (0w:word9))
-End
-
-Definition sp_ok_def:
-  sp_ok (s:arm8_state) ⇔
-    s.PSTATE.EL = 0w ∧ (¬s.SCTLR_EL1.SA0 ∨ aligned 4 s.SP_EL0)
-End
+(* ---- Definitions (core erase/bits_of/restore/untagged/sp_ok/lo55/arm8_target_real/real_mc are pinned in forge_contractSpec) ---- *)
 
 Definition tbi_pc_def:
   tbi_pc (tcr:TCR_EL1) (t:word64) =
@@ -54,39 +30,22 @@ Definition erase_e0e_def:
   erase_e0e (s:arm8_state) = (erase s) with SCTLR_EL1 := (erase s).SCTLR_EL1 with E0E := F
 End
 
-Definition lo55_def:
-  lo55 (mc : (64, 'b, 'c) machine_config) ⇔
-    ∀a. a ∈ mc.prog_addresses ∨ a = mc.halt_pc ∨ a = mc.install_pc ∨ MEM a mc.ffi_entry_pcs ⇒
-        untagged a
-End
-
-Definition arm8_target_real_def:
-  arm8_target_real (B : bool # bool # bool) =
+Definition arm8_target_exact_def:
+  arm8_target_exact (check_sp : bool) =
     arm8_target with <|
       next := arm8$Next;
-      state_ok := λms. arm8_ok (erase ms) ∧ bits_of ms = B ∧
-                       (¬SND (SND B) ∨ aligned 4 ms.SP_EL0)
+      state_ok := λms. arm8_ok ms ∧ (¬check_sp ∨ aligned 4 ms.SP_EL0);
+      proj := λd ms. (arm8_proj d ms, ms.SP_EL0)
     |>
 End
 
-Definition real_mc_def:
-  real_mc (B : bool # bool # bool) (mc : (64, arm8_state, 'c) machine_config) =
+Definition erase_mc_def:
+  erase_mc (B : bool # bool # bool) (mc : (64, arm8_state, 'c) machine_config) =
     mc with <|
-      target := arm8_target_real B;
-      next_interfer := λk ms. restore B (mc.next_interfer k (erase ms));
-      ffi_interfer := λk (i, bs, ms). restore B (mc.ffi_interfer k (i, bs, erase ms));
-      install_interfer := λk (bs, ms). restore B (mc.install_interfer k (bs, erase ms))
+      target := arm8_target_exact (SND (SND B));
+      ffi_interfer := λk (i, bs, s). erase (mc.ffi_interfer k (i, bs, restore B s));
+      install_interfer := λk (bs, s). erase (mc.install_interfer k (bs, restore B s))
     |>
-End
-
-Definition interfer_sp_bits_ok_def:
-  interfer_sp_bits_ok (mc : (64, arm8_state, 'c) machine_config) ⇔
-    (∀k s. aligned 4 s.SP_EL0 ⇒ aligned 4 (mc.next_interfer k s).SP_EL0) ∧
-    (∀k s. erase s = s ⇒ erase (mc.next_interfer k s) = mc.next_interfer k s) ∧
-    (∀k i bs s. aligned 4 s.SP_EL0 ⇒ aligned 4 (mc.ffi_interfer k (i, bs, s)).SP_EL0) ∧
-    (∀k i bs s. erase s = s ⇒ erase (mc.ffi_interfer k (i, bs, s)) = mc.ffi_interfer k (i, bs, s)) ∧
-    (∀k bs s. aligned 4 s.SP_EL0 ⇒ aligned 4 (mc.install_interfer k (bs, s)).SP_EL0) ∧
-    (∀k bs s. erase s = s ⇒ erase (mc.install_interfer k (bs, s)) = mc.install_interfer k (bs, s))
 End
 
 (* ---- 1. Field & round-trip lemmas ---- *)
@@ -809,51 +768,1445 @@ Proof
   \\ metis_tac [restore_erase]
 QED
 
-(* ---- 4. Whole-run lift from erased machine_sem to real Linux EL0 processor bits ---- *)
 
-Theorem evaluate_non_error_pc_valid:
-  ∀mc ffi ms.
-    mc.target = arm8_target ∧
-    FST (evaluate mc ffi 1 ms) ≠ Error ⇒
-    ms.PC ∈ mc.prog_addresses ∨ ms.PC = mc.halt_pc ∨
-    ms.PC = mc.install_pc ∨ MEM ms.PC mc.ffi_entry_pcs
+(* ---- 4. Exact ARMv8 Target (arm8_target_exact) & No-svc0 in Encoded CakeML Code ---- *)
+
+Theorem EXN_COND[local]:
+  ∀c (a:arm8_state) b. (if c then a else b).exception = if c then a.exception else b.exception
 Proof
-  rpt strip_tac
-  \\ qpat_x_assum `FST _ ≠ Error` mp_tac
-  \\ simp [Once evaluate_def, arm8_target_def]
-  \\ Cases_on `ms.PC ∈ mc.prog_addresses DIFF set mc.ffi_entry_pcs` \\ fs []
-  \\ Cases_on `ms.PC = mc.halt_pc` \\ fs []
-  \\ Cases_on `ms.PC = mc.install_pc` \\ fs []
-  \\ Cases_on `find_index ms.PC mc.ffi_entry_pcs 0` \\ fs []
-  \\ imp_res_tac miscTheory.find_index_is_MEM \\ fs []
+  rw []
 QED
 
-Theorem interference_ok_arm8_pc:
-  ∀f dm ms.
-    interference_ok f (arm8_target.proj dm) ⇒
-    (f 0 ms).PC = ms.PC
+Theorem SP_COND[local]:
+  ∀c (a:arm8_state) b. (if c then a else b).SP_EL0 = if c then a.SP_EL0 else b.SP_EL0
 Proof
-  rw [asmPropsTheory.interference_ok_def, arm8_target_def, arm8_proj_def]
-  \\ first_x_assum (qspecl_then [`0`, `ms`] mp_tac)
+  rw []
+QED
+
+Theorem PC_COND[local]:
+  ∀c (a:arm8_state) b. (if c then a else b).PC = if c then a.PC else b.PC
+Proof
+  rw []
+QED
+
+Theorem BH_COND[local]:
+  ∀c (a:arm8_state) b. (if c then a else b).branch_hint = if c then a.branch_hint else b.branch_hint
+Proof
+  rw []
+QED
+
+Theorem BranchTo_exn_sp[local]:
+  ∀t bt s. (BranchTo (t, bt) s).exception = s.exception ∧ (BranchTo (t, bt) s).SP_EL0 = s.SP_EL0
+Proof
+  rpt gen_tac \\ qspec_then `s.PSTATE.EL` strip_assume_tac word2_cases
+  \\ simp [BranchTo_def, Hint_Branch_def, LET_THM, EXN_COND, SP_COND]
+QED
+
+Theorem SetTheFlags_exn_sp[local]:
+  ∀x s. (SetTheFlags x s).exception = s.exception ∧ (SetTheFlags x s).SP_EL0 = s.SP_EL0
+Proof
+  gen_tac \\ PairCases_on `x` \\ simp [SetTheFlags_def, LET_THM, EXN_COND, SP_COND]
+QED
+
+Theorem writeX_exn_sp_pc_bh[local]:
+  ∀(v:'a word) n s.
+    (write'X (v, n) s).exception = s.exception ∧
+    (write'X (v, n) s).SP_EL0 = s.SP_EL0 ∧
+    (write'X (v, n) s).PC = s.PC ∧
+    (write'X (v, n) s).branch_hint = s.branch_hint
+Proof
+  rpt gen_tac \\ simp [write'X_def, EXN_COND, SP_COND, PC_COND, BH_COND]
+QED
+
+Theorem Fetch_arm8_ok:
+  ∀s (w:word32).
+    arm8_ok s ∧
+    s.MEM s.PC = (7 >< 0) w ∧
+    s.MEM (s.PC + 1w) = (15 >< 8) w ∧
+    s.MEM (s.PC + 2w) = (23 >< 16) w ∧
+    s.MEM (s.PC + 3w) = (31 >< 24) w ⇒
+    Fetch (s with branch_hint := NONE) = (w, s with branch_hint := NONE)
+Proof
+  rpt strip_tac
+  \\ simp [Fetch_def]
+  \\ mp_tac (arm8_stepTheory.mem4 |> DISCH_ALL
+             |> Q.INST [`s` |-> `s with branch_hint := NONE`,
+                        `address` |-> `s.PC`,
+                        `acctype` |-> `AccType_IFETCH`])
+  \\ simp [arm8_ok_def, arm8_stepTheory.mem_word_def]
+  \\ fs [arm8_ok_def]
+  \\ strip_tac \\ simp [] \\ blastLib.BBLAST_TAC
+QED
+
+local
+  val fast_simps =
+    [Run_def, NoOperation_def, dfn'Hint_def, dfn'Address_def,
+     dfn'BranchConditional_def, dfn'BranchImmediate_def, dfn'BranchRegister_def,
+     dfn'MoveWide_def, dfn'AddSubShiftedRegister_def, dfn'LogicalShiftedRegister_def,
+     dfn'BitfieldMove_def, dfn'ExtractRegister_def, dfn'Shift_def, dfn'Division_def,
+     dfn'MultiplyHigh_def, dfn'MultiplyAddSub_def, dfn'ConditionalSelect_def,
+     dfn'ConditionalCompareImmediate_def, dfn'AddSubCarry_def,
+     dfn'AddSubImmediate_def, dfn'LogicalImmediate_def,
+     BranchTo_exn_sp, SetTheFlags_exn_sp, writeX_exn_sp_pc_bh,
+     EXN_COND, SP_COND, LET_THM, UNCURRY]
+in
+Theorem safe_nonmem_Run_ok[local]:
+  ∀ins s.
+    (ins = Hint SystemHintOp_NOP ∨
+     (∃a. ins = Address a) ∨
+     (∃b. ins = Branch b ∧
+          ((∃x. b = BranchConditional x) ∨ (∃x. b = BranchImmediate x) ∨ (∃x. b = BranchRegister x))) ∨
+     (∃d. ins = Data d ∧
+          ((∃x. d = MoveWide@64 x) ∨
+           (∃x. d = AddSubShiftedRegister@64 x) ∨
+           (∃x. d = LogicalShiftedRegister@64 x) ∨
+           (∃x. d = BitfieldMove@64 x) ∨
+           (∃x. d = ExtractRegister@64 x) ∨
+           (∃x. d = Shift@64 x) ∨
+           (∃x. d = Division@64 x) ∨
+           (∃x. d = MultiplyHigh x) ∨
+           (∃x. d = MultiplyAddSub@64 x) ∨
+           (∃x. d = ConditionalSelect@64 x) ∨
+           (∃x. d = ConditionalCompareImmediate@64 x) ∨
+           (∃x. d = AddSubCarry@64 x) ∨
+           (∃sf subop setflags imm rn rd.
+              d = AddSubImmediate@64 (sf, subop, setflags, imm, rn, rd) ∧ (setflags ∨ rd ≠ 31w)) ∨
+           (∃sf lop setflags imm rn rd.
+              d = LogicalImmediate@64 (sf, lop, setflags, imm, rn, rd) ∧ (setflags ∨ rd ≠ 31w))))) ⇒
+    (Run ins s).exception = s.exception ∧ (Run ins s).SP_EL0 = s.SP_EL0
+Proof
+  rpt strip_tac \\ rveq
+  \\ TRY (PairCases_on `a`) \\ TRY (PairCases_on `x`)
+  \\ simp fast_simps
+  \\ TRY (Cases_on `setflags` \\ simp fast_simps)
+  \\ TRY (BasicProvers.every_case_tac \\ simp fast_simps)
+QED
+end;
+
+local
+  val FOR_proj_exn = BETA_RULE (Q.ISPEC `λs:arm8_state. s.exception` FOR_proj)
+  val FOR_proj_sp  = BETA_RULE (Q.ISPEC `λs:arm8_state. s.SP_EL0` FOR_proj)
+  val FOR_proj_pc  = BETA_RULE (Q.ISPEC `λs:arm8_state. s.PC` FOR_proj)
+  val FOR_proj_bh  = BETA_RULE (Q.ISPEC `λs:arm8_state. s.branch_hint` FOR_proj)
+in
+Theorem lsi_Run_ok[local]:
+  ∀s rsw mo sg wbu rtu uo off n t.
+    arm8_ok s ∧ n ≠ 31w ⇒
+    ((∀sz. aligned 3 (s.REG n + off) ⇒
+       let r = Run (LoadStore (LoadStoreImmediate@64 (sz, rsw, mo, AccType_NORMAL, sg, wbu, rtu, F, F, uo, off, n, t))) s in
+         r.exception = NoException ∧ r.SP_EL0 = s.SP_EL0 ∧ r.PC = s.PC ∧ r.branch_hint = s.branch_hint) ∧
+     (∀sz. aligned 2 (s.REG n + off) ⇒
+       let r = Run (LoadStore (LoadStoreImmediate@32 (sz, rsw, mo, AccType_NORMAL, sg, wbu, rtu, F, F, uo, off, n, t))) s in
+         r.exception = NoException ∧ r.SP_EL0 = s.SP_EL0 ∧ r.PC = s.PC ∧ r.branch_hint = s.branch_hint) ∧
+     (∀sz. aligned 1 (s.REG n + off) ⇒
+       let r = Run (LoadStore (LoadStoreImmediate@16 (sz, rsw, mo, AccType_NORMAL, sg, wbu, rtu, F, F, uo, off, n, t))) s in
+         r.exception = NoException ∧ r.SP_EL0 = s.SP_EL0 ∧ r.PC = s.PC ∧ r.branch_hint = s.branch_hint) ∧
+     (∀sz.
+       let r = Run (LoadStore (LoadStoreImmediate@8 (sz, rsw, mo, AccType_NORMAL, sg, wbu, rtu, F, F, uo, off, n, t))) s in
+         r.exception = NoException ∧ r.SP_EL0 = s.SP_EL0 ∧ r.PC = s.PC ∧ r.branch_hint = s.branch_hint))
+Proof
+  rpt strip_tac
+  \\ simp [Run_def, dfn'LoadStoreImmediate_def, LoadStoreSingle_def, LET_THM, UNCURRY,
+           X_def, EXN_COND, SP_COND, PC_COND, BH_COND, Mem_state]
+  \\ Cases_on `mo`
+  \\ simp [write'Mem_def, CheckAlignment_def, Aligned, LET_THM, UNCURRY,
+           arm8_ok_def, alignmentTheory.aligned_0, EXN_COND, SP_COND, PC_COND, BH_COND, writeX_exn_sp_pc_bh]
+  \\ fs [arm8_ok_def, alignmentTheory.aligned_0]
+  \\ simp [FOR_proj_exn, FOR_proj_sp, FOR_proj_pc, FOR_proj_bh]
+QED
+end;
+
+Theorem addsub_imm_Run_ok[local]:
+  ∀subop (b:word64) (rn:word5) s.
+    arm8_ok s ∧ rn ≠ 31w ⇒
+    let r = Run (Data (AddSubImmediate@64 (1w, subop, F, b, rn, 26w))) (s with branch_hint := NONE) in
+      r.exception = NoException ∧ r.SP_EL0 = s.SP_EL0 ∧
+      r.PC = s.PC ∧ r.branch_hint = NONE ∧
+      r.REG 26w = (if subop then s.REG rn - b else s.REG rn + b)
+Proof
+  rpt strip_tac
+  \\ Cases_on `subop`
+  \\ simp [Run_def, dfn'AddSubImmediate_def, X_def, write'X_def, AddWithCarry_def,
+           SetTheFlags_def, wordsTheory.add_with_carry_def, wordsTheory.WORD_NOT,
+           GSYM wordsTheory.word_add_n2w, wordsTheory.n2w_w2n,
+           LET_THM, UNCURRY, combinTheory.APPLY_UPDATE_THM]
+  \\ fs [arm8_ok_def]
+QED
+
+(* Decode-of-Encode round-trip lemmas for all 20 arm8_ast instruction shapes *)
+local
+  fun boolify_conv tm =
+    if is_comb tm andalso same_const (rator tm) ``boolify32`` then
+      (REWR_CONV boolify32_def THENC
+       DEPTH_CONV (fn t => if wordsSyntax.is_word_bit t then blastLib.BBLAST_CONV t else NO_CONV t)) tm
+    else NO_CONV tm
+
+  val v2w_simps = map bitstringLib.v2w_n2w_CONV
+    [``v2w [T] : word1``, ``v2w [F] : word1``,
+     ``v2w [F; F] : word2``, ``v2w [F; T] : word2``, ``v2w [T; F] : word2``, ``v2w [T; T] : word2``,
+     ``v2w [F; F; F] : word3``, ``v2w [F; F; T] : word3``, ``v2w [F; T; F] : word3``, ``v2w [F; T; T] : word3``,
+     ``v2w [T; F; F] : word3``, ``v2w [T; F; T] : word3``, ``v2w [T; T; F] : word3``, ``v2w [T; T; T] : word3``,
+     ``v2w [T; T; F; T; F] : word5``]
+
+  val decode_enc_tac =
+    simp ([Encode_def, e_data_def, e_branch_def, e_load_store_def, e_sf_def,
+           e_LoadStoreImmediate_def, EncodeLogicalOp_def, NoOperation_def,
+           ShiftType2num_thm, SystemHintOp2num_thm, LET_THM] @ v2w_simps)
+    \\ simp [Decode_def]
+    \\ CONV_TAC (DEPTH_CONV boolify_conv)
+    \\ simp (v2w_simps @ [arm8_stepTheory.DecodeLogicalOp, arm8Theory.LoadStoreImmediate_def,
+                          arm8Theory.LoadStoreImmediateN_def, pairTheory.UNCURRY])
+in
+
+Theorem dec_NoOp[local]:
+  ∃w. Encode NoOperation = ARM8 w ∧ Decode w = Hint SystemHintOp_NOP
+Proof
+  decode_enc_tac \\ EVAL_TAC
+QED
+
+Theorem dec_MoveWide[local]:
+  ∀op hw (imm16:word16) (d:word5).
+    ∃w a. Encode (Data (MoveWide@64 (1w, op, hw, imm16, d))) = ARM8 w ∧
+          Decode w = Data (MoveWide@64 a)
+Proof
+  rpt gen_tac \\ Cases_on `op` \\ decode_enc_tac
+QED
+
+Theorem dec_LogicalImm[local]:
+  ∀lop setflags (imm:word64) (rn:word5) (rd:word5).
+    IS_SOME (EncodeBitMask imm) ∧ (setflags ∨ rd ≠ 31w) ∧
+    (lop = LogicalOp_AND ∨ lop = LogicalOp_ORR ∨ lop = LogicalOp_EOR) ∧
+    (setflags ⇒ lop = LogicalOp_AND) ⇒
+    ∃w sf' lop' sf_f imm' rn' rd'.
+      Encode (Data (LogicalImmediate@64 (1w, lop, setflags, imm, rn, rd))) = ARM8 w ∧
+      Decode w = Data (LogicalImmediate@64 (sf', lop', sf_f, imm', rn', rd')) ∧
+      (sf_f ∨ rd' ≠ 31w)
+Proof
+  rpt strip_tac
+  \\ `∃n s r. EncodeBitMask imm = SOME (n, s, r)` by
+       (Cases_on `EncodeBitMask imm` \\ fs [] \\ PairCases_on `x` \\ metis_tac [])
+  \\ drule (cj 2 arm8_targetProofTheory.Decode_EncodeBitMask) \\ strip_tac
+  \\ Cases_on `lop` \\ Cases_on `setflags` \\ fs []
+  \\ decode_enc_tac
+  \\ simp [arm8_targetProofLib.lem2]
+  \\ `v2w [rd ' 4; rd ' 3; rd ' 2; rd ' 1; rd ' 0] = rd` by blastLib.BBLAST_TAC
   \\ simp []
 QED
 
-Theorem interference_ok_shift:
-  ∀f p.
-    interference_ok f p ⇒
-    interference_ok (λk. f (k + 1)) p
+Theorem dec_AddSubShift[local]:
+  ∀subop setflags sh (rm:word5) (shamt:word6) (rn:word5) (rd:word5).
+    (sh = ShiftType_LSL ∨ sh = ShiftType_ASR) ⇒
+    ∃w a. Encode (Data (AddSubShiftedRegister@64 (1w, subop, setflags, sh, rm, shamt, rn, rd))) = ARM8 w ∧
+          Decode w = Data (AddSubShiftedRegister@64 a)
 Proof
-  rw [asmPropsTheory.interference_ok_def]
+  rpt strip_tac \\ rveq \\ decode_enc_tac
 QED
 
-Theorem interfer_sp_bits_ok_shifts:
-  ∀mc. interfer_sp_bits_ok mc ⇒
-    interfer_sp_bits_ok (mc with next_interfer := (λk. mc.next_interfer (k + 1))) ∧
-    interfer_sp_bits_ok (mc with ffi_interfer := (λk. mc.ffi_interfer (k + 1))) ∧
-    interfer_sp_bits_ok (mc with install_interfer := (λk. mc.install_interfer (k + 1)))
+Theorem dec_LogShift[local]:
+  ∀lop inv setflags (rm:word5) (rn:word5) (rd:word5).
+    (lop = LogicalOp_AND ∨ lop = LogicalOp_ORR ∨ lop = LogicalOp_EOR) ∧
+    (setflags ⇒ lop = LogicalOp_AND) ⇒
+    ∃w a. Encode (Data (LogicalShiftedRegister@64 (1w, lop, inv, setflags, ShiftType_LSL, 0, rm, rn, rd))) = ARM8 w ∧
+          Decode w = Data (LogicalShiftedRegister@64 a)
 Proof
-  rw [interfer_sp_bits_ok_def]
+  rpt strip_tac \\ Cases_on `lop` \\ Cases_on `setflags` \\ fs [] \\ decode_enc_tac
 QED
+
+Theorem dec_AddSubImm[local]:
+  ∀subop setflags (imm:word64) (rn:word5) (rd:word5).
+    ((~0xFFFw && imm = 0w) ∨ (~0xFFF000w && imm = 0w)) ∧ (setflags ∨ rd ≠ 31w) ⇒
+    ∃w sf' sub' sf_f imm' rn' rd'.
+      Encode (Data (AddSubImmediate@64 (1w, subop, setflags, imm, rn, rd))) = ARM8 w ∧
+      Decode w = Data (AddSubImmediate@64 (sf', sub', sf_f, imm', rn', rd')) ∧
+      (sf_f ∨ rd' ≠ 31w)
+Proof
+  rpt strip_tac
+  \\ Cases_on `~0xFFFw && imm = 0w` \\ Cases_on `setflags` \\ fs []
+  \\ decode_enc_tac
+  \\ `v2w [rd ' 4; rd ' 3; rd ' 2; rd ' 1; rd ' 0] = rd` by blastLib.BBLAST_TAC
+  \\ simp []
+QED
+
+Theorem dec_AddSubImm_exact[local]:
+  ∀subop (b:word64) (rn:word5).
+    (~0xFFFw && b = 0w) ⇒
+    ∃w. Encode (Data (AddSubImmediate@64 (1w, subop, F, b, rn, 26w))) = ARM8 w ∧
+        Decode w = Data (AddSubImmediate@64 (1w, subop, F, b, rn, 26w))
+Proof
+  rpt strip_tac \\ Cases_on `subop` \\ fs [] \\ decode_enc_tac
+  \\ `v2w [rn ' 4; rn ' 3; rn ' 2; rn ' 1; rn ' 0] = rn` by blastLib.BBLAST_TAC
+  \\ `w2w (v2w [b ' 11; b ' 10; b ' 9; b ' 8; b ' 7; b ' 6; b ' 5; b ' 4; b ' 3; b ' 2; b ' 1; b ' 0] : word12) = b` by
+       (irule arm8_targetProofLib.lem25 \\ fs [])
+  \\ simp []
+QED
+
+Theorem dec_Bitfield[local]:
+  ∀asr_f (wmask:word64) (tmask:word64) r s (rn:word5) (rd:word5).
+    r < 64 ∧ s < 64 ∧
+    DecodeBitMasks (1w, n2w s, n2w r, F) = SOME (wmask, tmask) ⇒
+    ∃w a. Encode (Data (BitfieldMove@64 (1w, T, asr_f, wmask, tmask, r, s, rn, rd))) = ARM8 w ∧
+          Decode w = Data (BitfieldMove@64 a)
+Proof
+  rpt strip_tac
+  \\ `∀n:num. v2w [BIT 5 n; BIT 4 n; BIT 3 n; BIT 2 n; BIT 1 n; BIT 0 n] = (n2w n : word6)` by
+       (gen_tac
+        \\ qspec_then `n2w n : word6` mp_tac (cj 2 arm8_targetProofLib.lem2)
+        \\ simp [wordsTheory.word_index])
+  \\ `w2n (n2w r : word6) = r ∧ w2n (n2w s : word6) = s` by simp [wordsTheory.w2n_n2w, dimword_6]
+  \\ Cases_on `asr_f`
+  \\ decode_enc_tac
+QED
+
+Theorem dec_Extract[local]:
+  ∀(immr:word6) (rm:word5) (rn:word5) (rd:word5).
+    ∃w a. Encode (Data (ExtractRegister@64 (1w, immr, rm, rn, rd))) = ARM8 w ∧
+          Decode w = Data (ExtractRegister@64 a)
+Proof
+  rpt gen_tac \\ decode_enc_tac
+QED
+
+Theorem dec_Shift[local]:
+  ∀sh (rm:word5) (rn:word5) (rd:word5).
+    ∃w a. Encode (Data (Shift@64 (1w, sh, rm, rn, rd))) = ARM8 w ∧
+          Decode w = Data (Shift@64 a)
+Proof
+  rpt gen_tac \\ Cases_on `sh` \\ decode_enc_tac
+QED
+
+Theorem dec_Div[local]:
+  ∀(rm:word5) (rn:word5) (rd:word5).
+    ∃w a. Encode (Data (Division@64 (1w, F, rm, rn, rd))) = ARM8 w ∧
+          Decode w = Data (Division@64 a)
+Proof
+  rpt gen_tac \\ decode_enc_tac
+QED
+
+Theorem dec_MulHi[local]:
+  ∀sg (rm:word5) (rn:word5) (rd:word5).
+    ∃w a. Encode (Data (MultiplyHigh (sg, rm, rn, rd))) = ARM8 w ∧
+          Decode w = Data (MultiplyHigh a)
+Proof
+  rpt gen_tac \\ decode_enc_tac
+QED
+
+Theorem dec_MulAS[local]:
+  ∀subop (rm:word5) (ra:word5) (rn:word5) (rd:word5).
+    ∃w a. Encode (Data (MultiplyAddSub@64 (1w, subop, rm, ra, rn, rd))) = ARM8 w ∧
+          Decode w = Data (MultiplyAddSub@64 a)
+Proof
+  rpt gen_tac \\ decode_enc_tac
+QED
+
+Theorem dec_CSel[local]:
+  ∀(cond:word4) (rm:word5) (rn:word5) (rd:word5).
+    ∃w a. Encode (Data (ConditionalSelect@64 (1w, F, T, cond, rm, rn, rd))) = ARM8 w ∧
+          Decode w = Data (ConditionalSelect@64 a)
+Proof
+  rpt gen_tac \\ decode_enc_tac
+QED
+
+Theorem dec_CCmpI[local]:
+  ∀(rn:word5).
+    ∃w a. Encode (Data (ConditionalCompareImmediate@64 (1w, F, 0w, 0w, (F, F, T, F), rn))) = ARM8 w ∧
+          Decode w = Data (ConditionalCompareImmediate@64 a)
+Proof
+  rpt gen_tac \\ decode_enc_tac
+QED
+
+Theorem dec_AddC[local]:
+  ∀setflags (rm:word5) (rn:word5) (rd:word5).
+    ∃w a. Encode (Data (AddSubCarry@64 (1w, F, setflags, rm, rn, rd))) = ARM8 w ∧
+          Decode w = Data (AddSubCarry@64 a)
+Proof
+  rpt gen_tac \\ decode_enc_tac
+QED
+
+Theorem dec_BranchImm[local]:
+  ∀(off:word64) bt.
+    0xFFFFFFFFF8000000w ≤ off ∧ off ≤ 0x7FFFFFFw ∧ aligned 2 off ∧
+    (bt = BranchType_JMP ∨ bt = BranchType_CALL) ⇒
+    ∃w a. Encode (Branch (BranchImmediate (off, bt))) = ARM8 w ∧
+          Decode w = Branch (BranchImmediate a)
+Proof
+  rpt strip_tac \\ rveq
+  \\ `off = sw2sw ((((27 >< 2) off : 26 word) @@ (0w : word2)) : word28)` by
+       (irule arm8_targetProofLib.lem9 \\ simp [])
+  \\ decode_enc_tac
+QED
+
+Theorem dec_BranchCond[local]:
+  ∀(off:word64) (cond:word4).
+    0xFFFFFFFFFFF00000w ≤ off ∧ off ≤ 0xFFFFFw ∧ aligned 2 off ⇒
+    ∃w a. Encode (Branch (BranchConditional (off, cond))) = ARM8 w ∧
+          Decode w = Branch (BranchConditional a)
+Proof
+  rpt strip_tac
+  \\ `off = sw2sw ((((20 >< 2) off : 19 word) @@ (0w : word2)) : 21 word)` by
+       (fs [alignmentTheory.aligned_extract] \\ blastLib.FULL_BBLAST_TAC)
+  \\ decode_enc_tac
+QED
+
+Theorem dec_BranchReg[local]:
+  ∀(rn:word5).
+    ∃w a. Encode (Branch (BranchRegister (rn, BranchType_JMP))) = ARM8 w ∧
+          Decode w = Branch (BranchRegister a)
+Proof
+  rpt gen_tac \\ decode_enc_tac
+QED
+
+Theorem dec_Address[local]:
+  ∀(off:word64) (rd:word5).
+    sw2sw (INT_MINw:word20) ≤ off ∧ off ≤ sw2sw (INT_MAXw:word20) ⇒
+    ∃w a. Encode (Address (F, off, rd)) = ARM8 w ∧
+          Decode w = Address a
+Proof
+  rpt strip_tac
+  \\ `sw2sw ((((20 >< 2) off : 19 word) @@ ((1 >< 0) off : word2)) : 21 word) = off` by
+       (fs [wordsTheory.INT_MIN_def, wordsTheory.INT_MAX_def] \\ blastLib.FULL_BBLAST_TAC)
+  \\ simp [Encode_def, LET_THM]
+  \\ simp [Decode_def]
+  \\ CONV_TAC (DEPTH_CONV boolify_conv)
+  \\ simp v2w_simps
+QED
+
+Theorem dec_LSI64[local]:
+  ∀ls unsigned (off:word64) (rn:word5) (rt:word5).
+    (ls = MemOp_LOAD ∨ ls = MemOp_STORE) ∧
+    ((unsigned ∧ off = w2w ((11 >< 0) (off >>> 3) : word12) << 3) ∨
+     off = sw2sw ((8 >< 0) off : word9)) ⇒
+    ∃w sz rsw mo sg wbu rtu uo.
+      Encode (LoadStore (LoadStoreImmediate@64 (3w, F, ls, AccType_NORMAL, F, F, F, F, F, unsigned, off, rn, rt))) = ARM8 w ∧
+      Decode w = LoadStore (LoadStoreImmediate@64 (sz, rsw, mo, AccType_NORMAL, sg, wbu, rtu, F, F, uo, off, rn, rt))
+Proof
+  rpt strip_tac
+  \\ Cases_on `ls` \\ fs []
+  \\ simp [Encode_def, e_load_store_def, e_LoadStoreImmediate_def, LET_THM]
+  \\ rpt (IF_CASES_TAC \\ fs [])
+  \\ decode_enc_tac
+  \\ `v2w [rn ' 4; rn ' 3; rn ' 2; rn ' 1; rn ' 0] = rn ∧
+      v2w [rt ' 4; rt ' 3; rt ' 2; rt ' 1; rt ' 0] = rt` by blastLib.BBLAST_TAC
+  \\ simp []
+  \\ TRY (`w2w (v2w [off ' 14; off ' 13; off ' 12; off ' 11; off ' 10; off ' 9;
+                     off ' 8; off ' 7; off ' 6; off ' 5; off ' 4; off ' 3] : word12) << 3 = off` by blastLib.FULL_BBLAST_TAC)
+  \\ TRY (`sw2sw (v2w [off ' 8; off ' 7; off ' 6; off ' 5; off ' 4; off ' 3; off ' 2; off ' 1; off ' 0] : word9) = off` by blastLib.FULL_BBLAST_TAC)
+  \\ simp []
+QED
+
+Theorem dec_LSI32[local]:
+  ∀ls unsigned (off:word64) (rn:word5) (rt:word5).
+    (ls = MemOp_LOAD ∨ ls = MemOp_STORE) ∧
+    ((unsigned ∧ off = w2w ((11 >< 0) (off >>> 2) : word12) << 2) ∨
+     off = sw2sw ((8 >< 0) off : word9)) ⇒
+    ∃w sz rsw mo sg wbu rtu uo.
+      Encode (LoadStore (LoadStoreImmediate@32 (2w, T, ls, AccType_NORMAL, F, F, F, F, F, unsigned, off, rn, rt))) = ARM8 w ∧
+      Decode w = LoadStore (LoadStoreImmediate@32 (sz, rsw, mo, AccType_NORMAL, sg, wbu, rtu, F, F, uo, off, rn, rt))
+Proof
+  rpt strip_tac
+  \\ Cases_on `ls` \\ fs []
+  \\ simp [Encode_def, e_load_store_def, e_LoadStoreImmediate_def, LET_THM]
+  \\ rpt (IF_CASES_TAC \\ fs [])
+  \\ decode_enc_tac
+  \\ `v2w [rn ' 4; rn ' 3; rn ' 2; rn ' 1; rn ' 0] = rn ∧
+      v2w [rt ' 4; rt ' 3; rt ' 2; rt ' 1; rt ' 0] = rt` by blastLib.BBLAST_TAC
+  \\ simp []
+  \\ TRY (`w2w (v2w [off ' 13; off ' 12; off ' 11; off ' 10; off ' 9; off ' 8;
+                     off ' 7; off ' 6; off ' 5; off ' 4; off ' 3; off ' 2] : word12) << 2 = off` by blastLib.FULL_BBLAST_TAC)
+  \\ TRY (`sw2sw (v2w [off ' 8; off ' 7; off ' 6; off ' 5; off ' 4; off ' 3; off ' 2; off ' 1; off ' 0] : word9) = off` by blastLib.FULL_BBLAST_TAC)
+  \\ simp []
+QED
+
+Theorem dec_LSI16[local]:
+  ∀ls unsigned (off:word64) (rn:word5) (rt:word5).
+    (ls = MemOp_LOAD ∨ ls = MemOp_STORE) ∧
+    ((unsigned ∧ off = w2w ((11 >< 0) (off >>> 1) : word12) << 1) ∨
+     off = sw2sw ((8 >< 0) off : word9)) ⇒
+    ∃w sz rsw mo sg wbu rtu uo.
+      Encode (LoadStore (LoadStoreImmediate@16 (1w, T, ls, AccType_NORMAL, F, F, F, F, F, unsigned, off, rn, rt))) = ARM8 w ∧
+      Decode w = LoadStore (LoadStoreImmediate@16 (sz, rsw, mo, AccType_NORMAL, sg, wbu, rtu, F, F, uo, off, rn, rt))
+Proof
+  rpt strip_tac
+  \\ Cases_on `ls` \\ fs []
+  \\ simp [Encode_def, e_load_store_def, e_LoadStoreImmediate_def, LET_THM]
+  \\ rpt (IF_CASES_TAC \\ fs [])
+  \\ decode_enc_tac
+  \\ `v2w [rn ' 4; rn ' 3; rn ' 2; rn ' 1; rn ' 0] = rn ∧
+      v2w [rt ' 4; rt ' 3; rt ' 2; rt ' 1; rt ' 0] = rt` by blastLib.BBLAST_TAC
+  \\ simp []
+  \\ TRY (`w2w (v2w [off ' 12; off ' 11; off ' 10; off ' 9; off ' 8; off ' 7;
+                     off ' 6; off ' 5; off ' 4; off ' 3; off ' 2; off ' 1] : word12) << 1 = off` by blastLib.FULL_BBLAST_TAC)
+  \\ TRY (`sw2sw (v2w [off ' 8; off ' 7; off ' 6; off ' 5; off ' 4; off ' 3; off ' 2; off ' 1; off ' 0] : word9) = off` by blastLib.FULL_BBLAST_TAC)
+  \\ simp []
+QED
+
+Theorem dec_LSI8[local]:
+  ∀ls unsigned (off:word64) (rn:word5) (rt:word5).
+    (ls = MemOp_LOAD ∨ ls = MemOp_STORE) ∧
+    ((unsigned ∧ off = w2w ((11 >< 0) off : word12)) ∨
+     off = sw2sw ((8 >< 0) off : word9)) ⇒
+    ∃w sz rsw mo sg wbu rtu uo.
+      Encode (LoadStore (LoadStoreImmediate@8 (0w, F, ls, AccType_NORMAL, F, F, F, F, F, unsigned, off, rn, rt))) = ARM8 w ∧
+      Decode w = LoadStore (LoadStoreImmediate@8 (sz, rsw, mo, AccType_NORMAL, sg, wbu, rtu, F, F, uo, off, rn, rt))
+Proof
+  rpt strip_tac
+  \\ Cases_on `ls` \\ fs []
+  \\ simp [Encode_def, e_load_store_def, e_LoadStoreImmediate_def, LET_THM]
+  \\ rpt (IF_CASES_TAC \\ fs [])
+  \\ decode_enc_tac
+  \\ `v2w [rn ' 4; rn ' 3; rn ' 2; rn ' 1; rn ' 0] = rn ∧
+      v2w [rt ' 4; rt ' 3; rt ' 2; rt ' 1; rt ' 0] = rt` by blastLib.BBLAST_TAC
+  \\ simp []
+  \\ TRY (`w2w (v2w [off ' 11; off ' 10; off ' 9; off ' 8; off ' 7; off ' 6;
+                     off ' 5; off ' 4; off ' 3; off ' 2; off ' 1; off ' 0] : word12) = off` by blastLib.FULL_BBLAST_TAC)
+  \\ TRY (`sw2sw (v2w [off ' 8; off ' 7; off ' 6; off ' 5; off ' 4; off ' 3; off ' 2; off ' 1; off ' 0] : word9) = off` by blastLib.FULL_BBLAST_TAC)
+  \\ simp []
+QED
+
+end;
+
+(* No-svc #0 for every arm8_ast instruction -> encoded_bytes_in_mem_not_svc0 *)
+
+Theorem top_byte_neq_D4[local]:
+  ∀ins. (∀w. Encode ins = ARM8 w ⇒ (31 >< 24) w ≠ (0xD4w:word8)) ⇒
+        arm8_encode ins ≠ [1w; 0w; 0w; 0xD4w]
+Proof
+  rpt strip_tac \\ fs [arm8_encode_def]
+  \\ Cases_on `Encode ins` \\ fs []
+QED
+
+Theorem no_svc0_all_shapes[local]:
+  (arm8_encode NoOperation ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀f imm d. arm8_encode (Address (f, imm, d)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀b. arm8_encode (Branch b) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (LoadStore (LoadStoreImmediate@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (LoadStore (LoadStoreImmediate@32 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (LoadStore (LoadStoreImmediate@16 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (LoadStore (LoadStoreImmediate@8 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (MoveWide@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (LogicalImmediate@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (AddSubShiftedRegister@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (LogicalShiftedRegister@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (AddSubImmediate@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (BitfieldMove@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (ExtractRegister@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (Shift@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (Division@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (MultiplyHigh a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (MultiplyAddSub@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (ConditionalSelect@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (ConditionalCompareImmediate@64 a)) ≠ [1w; 0w; 0w; 0xD4w]) ∧
+  (∀a. arm8_encode (Data (AddSubCarry@64 a)) ≠ [1w; 0w; 0w; 0xD4w])
+Proof
+  rpt conj_tac
+  >- (simp [arm8_encode_def, Encode_def, NoOperation_def, SystemHintOp2num_thm] \\ EVAL_TAC)
+  >- (rpt gen_tac \\ irule top_byte_neq_D4 \\ gen_tac
+      \\ simp [Encode_def, LET_THM] \\ rw [] \\ rpt (pop_assum kall_tac) \\ blastLib.BBLAST_TAC)
+  >- (gen_tac \\ irule top_byte_neq_D4 \\ gen_tac
+      \\ Cases_on `b` \\ simp [Encode_def, e_branch_def, LET_THM, UNCURRY]
+      \\ TRY (PairCases_on `p`) \\ simp [LET_THM]
+      \\ TRY (Cases_on `p1`) \\ simp [LET_THM]
+      \\ rw [] \\ rpt (pop_assum kall_tac) \\ blastLib.BBLAST_TAC)
+  >- (gen_tac \\ irule top_byte_neq_D4 \\ gen_tac \\ PairCases_on `a`
+      \\ simp [Encode_def, e_load_store_def, e_LoadStoreImmediate_def, LET_THM]
+      \\ rw [] \\ rpt (pop_assum kall_tac) \\ blastLib.BBLAST_TAC)
+  >- (gen_tac \\ irule top_byte_neq_D4 \\ gen_tac \\ PairCases_on `a`
+      \\ simp [Encode_def, e_load_store_def, e_LoadStoreImmediate_def, LET_THM]
+      \\ rw [] \\ rpt (pop_assum kall_tac) \\ blastLib.BBLAST_TAC)
+  >- (gen_tac \\ irule top_byte_neq_D4 \\ gen_tac \\ PairCases_on `a`
+      \\ simp [Encode_def, e_load_store_def, e_LoadStoreImmediate_def, LET_THM]
+      \\ rw [] \\ rpt (pop_assum kall_tac) \\ blastLib.BBLAST_TAC)
+  >- (gen_tac \\ irule top_byte_neq_D4 \\ gen_tac \\ PairCases_on `a`
+      \\ simp [Encode_def, e_load_store_def, e_LoadStoreImmediate_def, LET_THM]
+      \\ rw [] \\ rpt (pop_assum kall_tac) \\ blastLib.BBLAST_TAC)
+  \\ (gen_tac \\ irule top_byte_neq_D4 \\ gen_tac \\ PairCases_on `a`
+      \\ simp [Encode_def, e_data_def, e_sf_def, EncodeLogicalOp_def, ShiftType2num_thm, LET_THM]
+      \\ TRY (IF_CASES_TAC \\ rw [] \\ rpt (pop_assum kall_tac)
+              \\ qmatch_goalsub_abbrev_tac `466w @@ lo20` \\ blastLib.BBLAST_TAC \\ NO_TAC)
+      \\ BasicProvers.EVERY_CASE_TAC \\ rw []
+      \\ rpt (pop_assum kall_tac) \\ blastLib.BBLAST_TAC)
+QED
+
+Theorem arm8_encode_LENGTH4[local]:
+  ∀ins. LENGTH (arm8_encode ins) = 4
+Proof
+  gen_tac \\ simp [arm8_encode_def] \\ Cases_on `Encode ins` \\ simp []
+QED
+
+Theorem LIST_BIND_arm8_encode_LENGTH[local]:
+  ∀l. LENGTH (LIST_BIND l arm8_encode) = 4 * LENGTH l
+Proof
+  Induct \\ simp [arm8_encode_LENGTH4]
+QED
+
+Theorem DROP_LIST_BIND_arm8_encode[local]:
+  ∀l k. k < LENGTH l ⇒
+    ∃tl. DROP (4 * k) (LIST_BIND l arm8_encode) = arm8_encode (EL k l) ++ tl
+Proof
+  Induct \\ simp [listTheory.LIST_BIND_def] \\ rpt strip_tac
+  \\ Cases_on `k` \\ simp []
+  \\ `4 * SUC n = 4 + 4 * n` by decide_tac \\ pop_assum SUBST1_TAC
+  \\ simp [GSYM listTheory.LIST_BIND_def, rich_listTheory.DROP_APPEND2, arm8_encode_LENGTH4]
+QED
+
+Theorem arm8_ast_no_svc0[local]:
+  ∀i ins. MEM ins (arm8_ast i) ⇒ arm8_encode ins ≠ [1w; 0w; 0w; 0xD4w]
+Proof
+  gen_tac
+  \\ asmLib.asm_cases_tac `i`
+  \\ rpt strip_tac
+  \\ qpat_x_assum `MEM _ _` mp_tac
+  \\ simp [arm8_ast_def, arm8_encode_fail_def, arm8_load_store_ast_def,
+           arm8_load_store_ast32_def, arm8_load_store_ast16_def, LET_THM]
+  \\ BasicProvers.EVERY_CASE_TAC
+  \\ rpt strip_tac \\ gvs [no_svc0_all_shapes]
+QED
+
+Theorem encoded_bytes_in_mem_not_svc0:
+  ∀s dm. encoded_bytes_in_mem arm8_config s.PC s.MEM dm ⇒ ¬is_svc0_at s
+Proof
+  rpt strip_tac
+  \\ fs [targetSemTheory.encoded_bytes_in_mem_def, arm8_targetTheory.arm8_config_def,
+         arm8_targetTheory.arm8_enc_def, LIST_BIND_arm8_encode_LENGTH]
+  \\ `k < LENGTH (arm8_ast i)` by decide_tac
+  \\ `k * 4 = 4 * k` by decide_tac
+  \\ drule DROP_LIST_BIND_arm8_encode \\ strip_tac
+  \\ qpat_x_assum `bytes_in_memory _ _ _ _` mp_tac
+  \\ simp []
+  \\ `arm8_encode (EL k (arm8_ast i)) ≠ [1w; 0w; 0w; 0xD4w]` by
+       metis_tac [arm8_ast_no_svc0, listTheory.EL_MEM]
+  \\ `LENGTH (arm8_encode (EL k (arm8_ast i))) = 4` by simp [arm8_encode_LENGTH4]
+  \\ fs [listTheory.LENGTH_EQ_NUM_compute]
+  \\ rpt strip_tac
+  \\ gvs [miscTheory.bytes_in_memory_def, is_svc0_at_def, GSYM wordsTheory.WORD_ADD_ASSOC]
+QED
+
+(* Step-safety of all non-Mem arm8_ast instructions *)
+
+Theorem bytes_in_mem_encode_fetch[local]:
+  ∀ins w s dm.
+    arm8_ok s ∧ Encode ins = ARM8 w ∧ bytes_in_memory s.PC (arm8_encode ins) s.MEM dm ⇒
+    Fetch (s with branch_hint := NONE) = (w, s with branch_hint := NONE)
+Proof
+  rpt strip_tac
+  \\ irule Fetch_arm8_ok
+  \\ gvs [arm8_encode_def, miscTheory.bytes_in_memory_def, GSYM wordsTheory.WORD_ADD_ASSOC]
+QED
+
+Theorem Next_of_safe_nonmem[local]:
+  ∀ins w s dm.
+    arm8_ok s ∧ Encode ins = ARM8 w ∧ bytes_in_memory s.PC (arm8_encode ins) s.MEM dm ∧
+    (Decode w = Hint SystemHintOp_NOP ∨
+     (∃a. Decode w = Address a) ∨
+     (∃b. Decode w = Branch b ∧
+          ((∃x. b = BranchConditional x) ∨ (∃x. b = BranchImmediate x) ∨ (∃x. b = BranchRegister x))) ∨
+     (∃d. Decode w = Data d ∧
+          ((∃x. d = MoveWide@64 x) ∨
+           (∃x. d = AddSubShiftedRegister@64 x) ∨
+           (∃x. d = LogicalShiftedRegister@64 x) ∨
+           (∃x. d = BitfieldMove@64 x) ∨
+           (∃x. d = ExtractRegister@64 x) ∨
+           (∃x. d = Shift@64 x) ∨
+           (∃x. d = Division@64 x) ∨
+           (∃x. d = MultiplyHigh x) ∨
+           (∃x. d = MultiplyAddSub@64 x) ∨
+           (∃x. d = ConditionalSelect@64 x) ∨
+           (∃x. d = ConditionalCompareImmediate@64 x) ∨
+           (∃x. d = AddSubCarry@64 x) ∨
+           (∃sf subop setflags imm rn rd.
+              d = AddSubImmediate@64 (sf, subop, setflags, imm, rn, rd) ∧ (setflags ∨ rd ≠ 31w)) ∨
+           (∃sf lop setflags imm rn rd.
+              d = LogicalImmediate@64 (sf, lop, setflags, imm, rn, rd) ∧ (setflags ∨ rd ≠ 31w))))) ⇒
+    (arm8$Next s).exception = NoException ∧ (arm8$Next s).SP_EL0 = s.SP_EL0
+Proof
+  rpt gen_tac \\ disch_then (REPEAT_TCL CONJUNCTS_THEN assume_tac)
+  \\ drule_all bytes_in_mem_encode_fetch \\ strip_tac
+  \\ qspecl_then [`Decode w`, `s with branch_hint := NONE`] mp_tac safe_nonmem_Run_ok
+  \\ impl_tac >- metis_tac []
+  \\ strip_tac
+  \\ simp [Next_def, LET_THM]
+  \\ IF_CASES_TAC \\ fs [arm8_ok_def]
+QED
+
+Theorem reg_lt31_neq_31w[local]:
+  (∀r:num. r < 32 ∧ r ≠ 31 ⇒ (n2w r : word5) ≠ 31w) ∧
+  (∀r:num. r < 31 ⇒ (n2w r : word5) ≠ 31w)
+Proof
+  conj_tac \\ rpt strip_tac
+  \\ qpat_x_assum `n2w r = 31w` (mp_tac o AP_TERM ``w2n : word5 -> num``)
+  \\ simp [wordsTheory.w2n_n2w, EVAL ``dimword (:5)``, EVAL ``w2n (31w : word5)``]
+QED
+
+Theorem int_divides_4_i2w[local]:
+  ∀i:int. 4 int_divides i ⇒ (i2w i : word64) && 3w = 0w
+Proof
+  rpt strip_tac
+  \\ `∀w:word64. -(w * 4w) && 3w = 0w ∧ (w * 4w) && 3w = 0w` by blastLib.BBLAST_TAC
+  \\ qpat_x_assum `4 int_divides i` (strip_assume_tac o REWRITE_RULE [integerTheory.INT_DIVIDES])
+  \\ pop_assum (SUBST1_TAC o SYM)
+  \\ rename1 `k * 4`
+  \\ simp [integer_wordTheory.i2w_def]
+  \\ IF_CASES_TAC
+  >- (`∃n. -(k * 4) = &(n * 4)` by
+        (Cases_on `k` \\ TRY (qexists_tac `n` \\ intLib.ARITH_TAC) \\ intLib.ARITH_TAC)
+      \\ simp [integerTheory.NUM_OF_INT]
+      \\ first_x_assum (qspec_then `n2w n` (mp_tac o REWRITE_RULE [wordsTheory.word_mul_n2w]))
+      \\ simp [])
+  \\ `∃n. k * 4 = &(n * 4)` by
+       (Cases_on `k` \\ TRY (qexists_tac `n` \\ intLib.ARITH_TAC) \\ qexists_tac `0` \\ intLib.ARITH_TAC)
+  \\ simp [integerTheory.NUM_OF_INT]
+  \\ first_x_assum (qspec_then `n2w n` (mp_tac o REWRITE_RULE [wordsTheory.word_mul_n2w]))
+  \\ simp []
+QED
+
+Theorem branch_offset_i2w_local[local]:
+  (∀i. -134217728 ≤ i ∧ i ≤ 134217727 ∧ 4 int_divides i ⇒
+       0xFFFFFFFFF8000000w ≤ (i2w i : word64) ∧ (i2w i : word64) ≤ 0x7FFFFFFw ∧ aligned 2 (i2w i : word64)) ∧
+  (∀i. -1048572 ≤ i ∧ i ≤ 1048579 ∧ 4 int_divides i ⇒
+       0xFFFFFFFFFFF00000w ≤ (i2w i : word64) - 4w ∧ (i2w i : word64) - 4w ≤ 0xFFFFFw ∧
+       aligned 2 ((i2w i : word64) - 4w))
+Proof
+  conj_tac \\ gen_tac \\ disch_then strip_assume_tac
+  \\ `(i2w i : word64) && 3w = 0w` by imp_res_tac int_divides_4_i2w
+  \\ `w2i (i2w i : word64) = i` by
+       (irule integer_wordTheory.w2i_i2w
+        \\ simp [integer_wordTheory.INT_MIN_def, integer_wordTheory.INT_MAX_def,
+                 EVAL ``words$INT_MIN (:64)``, EVAL ``words$INT_MAX (:64)``]
+        \\ intLib.ARITH_TAC)
+  >- (
+    `w2i (0xFFFFFFFFF8000000w : word64) = -134217728 ∧ w2i (0x7FFFFFFw : word64) = 134217727` by EVAL_TAC
+    \\ simp [integer_wordTheory.WORD_LEi, alignmentTheory.aligned_bitwise_and]
+    \\ intLib.ARITH_TAC)
+  \\ `0xFFFFFFFFFFF00004w ≤ (i2w i : word64) ∧ (i2w i : word64) ≤ 0x100003w` by
+       (`w2i (0xFFFFFFFFFFF00004w : word64) = -1048572 ∧ w2i (0x100003w : word64) = 1048579` by EVAL_TAC
+        \\ simp [integer_wordTheory.WORD_LEi] \\ intLib.ARITH_TAC)
+  \\ simp [alignmentTheory.aligned_bitwise_and]
+  \\ rpt (qpat_x_assum `w2i _ = _` kall_tac)
+  \\ qpat_x_assum `0xFFFFFFFFFFF00004w ≤ _` mp_tac
+  \\ qpat_x_assum `_ ≤ 0x100003w` mp_tac
+  \\ qpat_x_assum `_ && 3w = 0w` mp_tac
+  \\ blastLib.BBLAST_TAC
+QED
+
+Theorem arm8_ast_nonmem_step_ok[local]:
+  ∀i ins s dm.
+    asm_ok i arm8_config ∧ (∀op r ad. i ≠ Inst (Mem op r ad)) ∧
+    MEM ins (arm8_ast i) ∧ arm8_ok s ∧ bytes_in_memory s.PC (arm8_encode ins) s.MEM dm ⇒
+    (arm8$Next s).exception = NoException ∧ (arm8$Next s).SP_EL0 = s.SP_EL0
+Proof
+  let
+    fun find_enc_ins asl =
+      let
+        fun get_ins tm =
+          let val (f, args) = strip_comb tm in
+            if is_const f andalso fst (dest_const f) = "bytes_in_memory" andalso length args = 4 then
+              let val (ef, eargs) = strip_comb (el 2 args) in
+                if is_const ef andalso fst (dest_const ef) = "arm8_encode" andalso length eargs = 1 then
+                  SOME (hd eargs)
+                else NONE
+              end
+            else NONE
+          end
+      in
+        case List.mapPartial get_ins asl of
+          ins :: _ => ins
+        | [] => raise mk_HOL_ERR "forge_arm8Erasure" "find_enc_ins" "not found"
+      end
+    val branch_cond_thm =
+      REWRITE_RULE [wordsTheory.word_sub_def, EVAL ``-(4w:word64)``] (cj 2 branch_offset_i2w_local)
+    val w2n_word6_lt =
+      SIMP_RULE (srw_ss()) [dimword_6] (Q.ISPEC `w:word6` wordsTheory.w2n_lt |> GEN_ALL)
+    fun dispatch_tac (asl, g) =
+      let
+        val ins = find_enc_ins asl
+        val (hd_c, args) = strip_comb ins
+        val cname = fst (dest_const hd_c)
+        val dec_tac =
+          if cname = "NoOperation" then
+            mp_tac dec_NoOp
+          else if cname = "Address" then
+            let val [_, off, rd] = pairSyntax.strip_pair (hd args) in
+              mp_tac (SPECL [off, rd] dec_Address)
+              \\ impl_tac >- (simp [] \\ TRY EVAL_TAC)
+            end
+          else if cname = "Branch" then
+            let val (bc, bargs) = strip_comb (hd args)
+                val bname = fst (dest_const bc) in
+              if bname = "BranchImmediate" then
+                let val [off, bt] = pairSyntax.strip_pair (hd bargs) in
+                  mp_tac (SPECL [off, bt] dec_BranchImm)
+                  \\ impl_tac >- (simp [] \\ irule (cj 1 branch_offset_i2w_local) \\ simp [])
+                end
+              else if bname = "BranchConditional" then
+                let val [off, cnd] = pairSyntax.strip_pair (hd bargs) in
+                  mp_tac (SPECL [off, cnd] dec_BranchCond)
+                  \\ impl_tac >- (simp [] \\ (irule (cj 2 branch_offset_i2w_local) ORELSE irule branch_cond_thm) \\ simp [])
+                end
+              else
+                let val [rn, _] = pairSyntax.strip_pair (hd bargs) in
+                  mp_tac (SPEC rn dec_BranchReg)
+                end
+            end
+          else (* Data *)
+            let val (dc, dargs) = strip_comb (hd args)
+                val dname = fst (dest_const dc)
+                val ps = pairSyntax.strip_pair (hd dargs) in
+              if dname = "MoveWide@64" then
+                mp_tac (SPECL [el 2 ps, el 3 ps, el 4 ps, el 5 ps] dec_MoveWide)
+              else if dname = "AddSubShiftedRegister@64" then
+                mp_tac (SPECL [el 2 ps, el 3 ps, el 4 ps, el 5 ps, el 6 ps, el 7 ps, el 8 ps] dec_AddSubShift)
+                \\ impl_tac >- simp []
+              else if dname = "LogicalShiftedRegister@64" then
+                mp_tac (SPECL [el 2 ps, el 3 ps, el 4 ps, el 7 ps, el 8 ps, el 9 ps] dec_LogShift)
+                \\ impl_tac >- simp []
+              else if dname = "AddSubImmediate@64" then
+                mp_tac (SPECL [el 2 ps, el 3 ps, el 4 ps, el 5 ps, el 6 ps] dec_AddSubImm)
+                \\ impl_tac >- (simp [reg_lt31_neq_31w] \\ TRY EVAL_TAC)
+              else if dname = "LogicalImmediate@64" then
+                mp_tac (SPECL [el 2 ps, el 3 ps, el 4 ps, el 5 ps, el 6 ps] dec_LogicalImm)
+                \\ impl_tac >- simp [reg_lt31_neq_31w]
+              else if dname = "BitfieldMove@64" then
+                mp_tac (SPECL [el 3 ps, el 4 ps, el 5 ps, el 6 ps, el 7 ps, el 8 ps, el 9 ps] dec_Bitfield)
+                \\ impl_tac >- (simp [wordsTheory.n2w_w2n, w2n_word6_lt]
+                                \\ fs [EVAL ``asm$arch_width_bits (asm$arch_wordsize asm$ARMv8)``]
+                                \\ TRY (`Num i < 64` by (Cases_on `i` \\ fs []) \\ simp []))
+              else if dname = "ExtractRegister@64" then
+                mp_tac (SPECL [el 2 ps, el 3 ps, el 4 ps, el 5 ps] dec_Extract)
+              else if dname = "Shift@64" then
+                mp_tac (SPECL [el 2 ps, el 3 ps, el 4 ps, el 5 ps] dec_Shift)
+              else if dname = "Division@64" then
+                mp_tac (SPECL [el 3 ps, el 4 ps, el 5 ps] dec_Div)
+              else if dname = "MultiplyHigh" then
+                mp_tac (SPECL [el 1 ps, el 2 ps, el 3 ps, el 4 ps] dec_MulHi)
+              else if dname = "MultiplyAddSub@64" then
+                mp_tac (SPECL [el 2 ps, el 3 ps, el 4 ps, el 5 ps, el 6 ps] dec_MulAS)
+              else if dname = "ConditionalSelect@64" then
+                mp_tac (SPECL [el 4 ps, el 5 ps, el 6 ps, el 7 ps] dec_CSel)
+              else if dname = "ConditionalCompareImmediate@64" then
+                mp_tac (SPEC (last ps) dec_CCmpI)
+              else if dname = "AddSubCarry@64" then
+                mp_tac (SPECL [el 3 ps, el 4 ps, el 5 ps, el 6 ps] dec_AddC)
+              else raise mk_HOL_ERR "forge_arm8Erasure" "dispatch_tac" ("unhandled: " ^ dname)
+            end
+      in
+        (dec_tac \\ strip_tac
+         \\ qpat_x_assum `Encode _ = ARM8 _` (fn eth =>
+              mp_tac (SPECL [ins, rand (rhs (concl eth)), ``s:arm8_state``, ``dm:word64 set``] Next_of_safe_nonmem)
+              \\ assume_tac eth)
+         \\ simp [reg_lt31_neq_31w]) (asl, g)
+      end
+  in
+  gen_tac
+  \\ asmLib.asm_cases_tac `i`
+  \\ rpt gen_tac \\ disch_then strip_assume_tac
+  \\ gvs [arm8_ast_def, arm8_asm_ok, arm8_valid_imm_def, valid_immediate_def,
+          arm8_encode_fail_def, asmSemTheory.is_test_def, bop_enc_def, LET_THM]
+  \\ BasicProvers.EVERY_CASE_TAC
+  \\ gvs [arm8_encode_fail_def]
+  \\ dispatch_tac
+  end
+QED
+
+Theorem bytes_in_memory_all_pcs_elem[local]:
+  ∀l pc m dm k.
+    k < LENGTH l ∧ bytes_in_memory pc (LIST_BIND l arm8_encode) m dm ⇒
+    bytes_in_memory (pc + n2w (4 * k)) (arm8_encode (EL k l)) m dm
+Proof
+  Induct \\ simp [listTheory.LIST_BIND_def] \\ rpt strip_tac
+  \\ Cases_on `k` \\ simp []
+  >- (fs [miscTheory.bytes_in_memory_APPEND])
+  \\ fs [miscTheory.bytes_in_memory_APPEND, arm8_encode_LENGTH4, GSYM listTheory.LIST_BIND_def]
+  \\ first_x_assum (qspecl_then [`pc + 4w`, `m`, `dm`, `n`] mp_tac)
+  \\ simp []
+  \\ `pc + n2w (4 * SUC n) = pc + 4w + n2w (4 * n)` by
+       (REWRITE_TAC [GSYM wordsTheory.WORD_ADD_ASSOC, wordsTheory.word_add_n2w, arithmeticTheory.MULT_SUC] \\ simp [])
+  \\ simp []
+QED
+
+Theorem bytes_in_memory_cong_pcs0[local]:
+  ∀bs pc m1 m2 dm.
+    bytes_in_memory pc bs m1 dm ∧
+    (∀a. a ∈ all_pcs (LENGTH bs) pc 0 ⇒ m2 a = m1 a) ⇒
+    bytes_in_memory pc bs m2 dm
+Proof
+  Induct \\ simp [miscTheory.bytes_in_memory_def]
+  \\ rpt strip_tac
+  >- (first_x_assum (qspec_then `pc` mp_tac)
+      \\ simp [asmPropsTheory.all_pcs_thm]
+      \\ impl_tac >- (qexists_tac `0` \\ simp []) \\ simp [])
+  \\ first_x_assum irule
+  \\ qexists_tac `m1` \\ simp []
+  \\ rpt strip_tac
+  \\ first_x_assum irule
+  \\ fs [asmPropsTheory.all_pcs_thm]
+  \\ qexists_tac `SUC i`
+  \\ REWRITE_TAC [GSYM wordsTheory.WORD_ADD_ASSOC, wordsTheory.word_add_n2w, arithmeticTheory.ADD1]
+  \\ simp []
+QED
+
+Theorem asserts_cong[local]:
+  ∀m f1 f2 s P R.
+    (∀k. k ≤ m ⇒ f1 k = f2 k) ⇒ (asserts m f1 s P R ⇔ asserts m f2 s P R)
+Proof
+  Induct_on `m` >- simp [asmPropsTheory.asserts_def]
+  \\ rpt strip_tac \\ simp [asmPropsTheory.asserts_def, LET_THM]
+  \\ `f1 (SUC m) = f2 (SUC m)` by simp []
+  \\ simp [] \\ AP_TERM_TAC \\ first_x_assum irule \\ rpt strip_tac \\ simp []
+QED
+
+Theorem asserts2_0_SUC[local]:
+  (∀fi fc ms P. asserts2 0 fi fc ms P ⇔ T) ∧
+  (∀n fi fc ms P. asserts2 (SUC n) fi fc ms P ⇔ P ms (fc ms) ∧ asserts2 n fi fc (fi (SUC n) (fc ms)) P) ∧
+  (∀n fi fc ms P. asserts2 (n + 1) fi fc ms P ⇔ P ms (fc ms) ∧ asserts2 n fi fc (fi (n + 1) (fc ms)) P)
+Proof
+  rpt conj_tac \\ rpt gen_tac \\ simp [Once asmPropsTheory.asserts2_def]
+QED
+
+Theorem asserts2_cong[local]:
+  ∀m f1 f2 fc s R.
+    (∀k. 1 ≤ k ∧ k ≤ m ⇒ f1 k = f2 k) ⇒ (asserts2 m f1 fc s R ⇔ asserts2 m f2 fc s R)
+Proof
+  Induct_on `m` >- simp [asserts2_0_SUC]
+  \\ rpt strip_tac \\ simp [asserts2_0_SUC]
+  \\ `f1 (SUC m) = f2 (SUC m)` by simp []
+  \\ simp [] \\ AP_TERM_TAC \\ first_x_assum irule \\ rpt strip_tac \\ simp []
+QED
+
+Theorem asserts_arm8_exact_lift[local]:
+  ∀n env ms P_next Q dm check_sp.
+    interference_ok env ((arm8_target_exact check_sp).proj dm) ∧
+    arm8_ok ms ∧ (¬check_sp ∨ aligned 4 ms.SP_EL0) ∧ P_next ms ∧
+    (∀s. arm8_ok s ∧ P_next s ⇒
+         (arm8$Next s).exception = NoException ∧ (arm8$Next s).SP_EL0 = s.SP_EL0) ∧
+    asserts n (λk s. env (n - k) (arm8_next s)) ms
+      (λms'. arm8_ok ms' ∧ P_next ms') Q ∧
+    asserts2 (n + 1) (λk. env (n + 1 - k)) arm8_next ms
+      (λms1 ms2. ∀x. x ∉ dm ⇒ ms1.MEM x = ms2.MEM x) ⇒
+    asserts n (λk s. env (n - k) (arm8$Next s)) ms
+      (λms'. (arm8_target_exact check_sp).state_ok ms' ∧ P_next ms')
+      (λms'. Q ms' ∧ (¬check_sp ∨ aligned 4 ms'.SP_EL0)) ∧
+    asserts2 (n + 1) (λk. env (n + 1 - k)) arm8$Next ms
+      (λms1 ms2. ∀x. x ∉ dm ⇒ ms1.MEM x = ms2.MEM x)
+Proof
+  Induct_on `n`
+  >- (
+    rpt gen_tac \\ disch_then (REPEAT_TCL CONJUNCTS_THEN assume_tac)
+    \\ `(arm8$Next ms).exception = NoException ∧ (arm8$Next ms).SP_EL0 = ms.SP_EL0` by metis_tac []
+    \\ `arm8_next ms = arm8$Next ms` by simp [arm8_next_def, NextStateARM8_def]
+    \\ `(env 0 (arm8$Next ms)).SP_EL0 = (arm8$Next ms).SP_EL0` by
+         (fs [asmPropsTheory.interference_ok_def, arm8_target_exact_def]
+          \\ first_x_assum (qspecl_then [`0`, `arm8$Next ms`] mp_tac) \\ simp [])
+    \\ fs [asmPropsTheory.asserts_def, asserts2_0_SUC, arithmeticTheory.ONE])
+  \\ rpt gen_tac \\ disch_then (REPEAT_TCL CONJUNCTS_THEN assume_tac)
+  \\ `(arm8$Next ms).exception = NoException ∧ (arm8$Next ms).SP_EL0 = ms.SP_EL0` by metis_tac []
+  \\ `arm8_next ms = arm8$Next ms` by simp [arm8_next_def, NextStateARM8_def]
+  \\ qabbrev_tac `ms1 = env 0 (arm8$Next ms)`
+  \\ `ms1.SP_EL0 = ms.SP_EL0` by
+       (fs [Abbr `ms1`, asmPropsTheory.interference_ok_def, arm8_target_exact_def]
+        \\ first_x_assum (qspecl_then [`0`, `arm8$Next ms`] mp_tac) \\ simp [])
+  \\ qpat_x_assum `asserts (SUC n) _ _ _ _` mp_tac
+  \\ simp [Once asmPropsTheory.asserts_def, LET_THM]
+  \\ strip_tac
+  \\ qpat_x_assum `asserts2 (SUC n + 1) _ _ _ _` mp_tac
+  \\ simp [Once (cj 3 asserts2_0_SUC)]
+  \\ strip_tac
+  \\ `interference_ok (λk. env (k + 1)) ((arm8_target_exact check_sp).proj dm)` by
+       (fs [asmPropsTheory.interference_ok_def])
+  \\ first_x_assum (qspecl_then [`λk. env (k + 1)`, `ms1`, `P_next`, `Q`, `dm`, `check_sp`] mp_tac)
+  \\ impl_tac
+  >- (
+    simp [Abbr `ms1`]
+    \\ conj_tac
+    >- (
+      qpat_x_assum `asserts n _ _ _ _` mp_tac
+      \\ `asserts n (λk s. env (SUC n - k) (arm8_next s)) (env 0 (arm8$Next ms))
+            (λms'. arm8_ok ms' ∧ P_next ms') Q ⇔
+          asserts n (λk s. env (n - k + 1) (arm8_next s)) (env 0 (arm8$Next ms))
+            (λms'. arm8_ok ms' ∧ P_next ms') Q` by
+           (irule asserts_cong \\ rpt strip_tac \\ simp [FUN_EQ_THM] \\ gen_tac
+            \\ AP_THM_TAC \\ AP_TERM_TAC \\ decide_tac)
+      \\ simp [])
+    \\ qpat_x_assum `asserts2 (SUC n) _ _ _ _` mp_tac
+    \\ `SUC n = n + 1` by decide_tac \\ pop_assum SUBST1_TAC
+    \\ `asserts2 (n + 1) (λk. env (n + 1 + 1 - k)) arm8_next (env 0 (arm8$Next ms))
+          (λms1 ms2. ∀x. x ∉ dm ⇒ ms1.MEM x = ms2.MEM x) ⇔
+        asserts2 (n + 1) (λk. env (n + 1 - k + 1)) arm8_next (env 0 (arm8$Next ms))
+          (λms1 ms2. ∀x. x ∉ dm ⇒ ms1.MEM x = ms2.MEM x)` by
+         (irule asserts2_cong \\ rpt strip_tac \\ simp [] \\ AP_TERM_TAC \\ decide_tac)
+    \\ simp [])
+  \\ disch_then (strip_assume_tac o BETA_RULE)
+  \\ qunabbrev_tac `ms1`
+  \\ conj_tac
+  >- (
+    simp [Once asmPropsTheory.asserts_def, LET_THM]
+    \\ conj_tac
+    >- simp [arm8_target_exact_def]
+    \\ qpat_x_assum `asserts n (λk s. env (n - k + 1) _) _ _ _` mp_tac
+    \\ `asserts n (λk s. env (n - k + 1) (arm8$Next s)) (env 0 (arm8$Next ms))
+          (λms'. (arm8_target_exact check_sp).state_ok ms' ∧ P_next ms')
+          (λms'. Q ms' ∧ (¬check_sp ∨ aligned 4 ms'.SP_EL0)) ⇔
+        asserts n (λk s. env (SUC n - k) (arm8$Next s)) (env 0 (arm8$Next ms))
+          (λms'. (arm8_target_exact check_sp).state_ok ms' ∧ P_next ms')
+          (λms'. Q ms' ∧ (¬check_sp ∨ aligned 4 ms'.SP_EL0))` by
+         (irule asserts_cong \\ rpt strip_tac \\ simp [FUN_EQ_THM] \\ gen_tac
+          \\ AP_THM_TAC \\ AP_TERM_TAC \\ decide_tac)
+    \\ simp [])
+  \\ simp [Once (cj 3 asserts2_0_SUC)]
+  \\ `SUC n = n + 1` by decide_tac \\ pop_assum SUBST1_TAC
+  \\ qpat_x_assum `asserts2 (n + 1) (λk. env (n + 1 - k + 1)) _ _ _` mp_tac
+  \\ `asserts2 (n + 1) (λk. env (n + 1 - k + 1)) arm8$Next (env 0 (arm8$Next ms))
+        (λms1 ms2. ∀x. x ∉ dm ⇒ ms1.MEM x = ms2.MEM x) ⇔
+      asserts2 (n + 1) (λk. env (n + 1 + 1 - k)) arm8$Next (env 0 (arm8$Next ms))
+        (λms1 ms2. ∀x. x ∉ dm ⇒ ms1.MEM x = ms2.MEM x)` by
+       (irule asserts2_cong \\ rpt strip_tac \\ simp [] \\ AP_TERM_TAC \\ decide_tac)
+  \\ simp []
+QED
+
+Theorem all_pcs_4_8[local]:
+  (∀pc:word64. pc + 4w ∉ all_pcs 4 pc 2) ∧
+  (∀pc:word64. pc + 8w ∉ all_pcs 8 pc 2)
+Proof
+  conj_tac \\ gen_tac
+  \\ simp [asmPropsTheory.all_pcs_thm, wordsTheory.WORD_EQ_ADD_LCANCEL,
+           wordsTheory.n2w_11, dimword_64]
+  \\ gen_tac \\ CCONTR_TAC \\ fs []
+  \\ `4 * i < 18446744073709551616` by decide_tac
+  \\ fs [arithmeticTheory.LESS_MOD]
+QED
+
+Theorem mem_offset_bounds[local]:
+  (∀i:int. -4351 ≤ i ∧ i ≤ 4350 ⇒
+           0xFFFFFFFFFFFFEF01w ≤ (i2w i : word64) ∧ (i2w i : word64) ≤ 0x10FEw) ∧
+  (∀i:int. -256 ≤ i ∧ i ≤ 4095 ⇒
+           0xFFFFFFFFFFFFFF00w ≤ (i2w i : word64) ∧ (i2w i : word64) ≤ 0xFFFw)
+Proof
+  conj_tac \\ gen_tac \\ disch_then strip_assume_tac
+  \\ `w2i (i2w i : word64) = i` by
+       (irule integer_wordTheory.w2i_i2w
+        \\ simp [integer_wordTheory.INT_MIN_def, integer_wordTheory.INT_MAX_def,
+                 EVAL ``words$INT_MIN (:64)``, EVAL ``words$INT_MAX (:64)``]
+        \\ intLib.ARITH_TAC)
+  >- (`w2i (0xFFFFFFFFFFFFEF01w : word64) = -4351 ∧ w2i (0x10FEw : word64) = 4350` by EVAL_TAC
+      \\ simp [integer_wordTheory.WORD_LEi] \\ intLib.ARITH_TAC)
+  \\ `w2i (0xFFFFFFFFFFFFFF00w : word64) = -256 ∧ w2i (0xFFFw : word64) = 4095` by EVAL_TAC
+  \\ simp [integer_wordTheory.WORD_LEi] \\ intLib.ARITH_TAC
+QED
+
+Theorem mem_2inst_arith[local]:
+  (∀c:word64.
+     0xFFFFFFFFFFFFEF01w ≤ c ∧ c ≤ 0x10FEw ∧ c ≠ sw2sw ((8 >< 0) c : word9) ⇒
+     (~0xFFFw && (if ~word_msb c then c - 0xFFw else -c - 0x100w) = 0w) ∧
+     (((if ~word_msb c then 0xFFw else -0x100w) : word64) =
+        sw2sw ((8 >< 0) ((if ~word_msb c then 0xFFw else -0x100w) : word64) : word9)) ∧
+     ∀x:word64.
+       (if word_msb c then x - (-c - 0x100w) else x + (c - 0xFFw)) +
+       (if ~word_msb c then 0xFFw else -0x100w) = x + c)
+Proof
+  rpt strip_tac
+  \\ Cases_on `word_msb c`
+  \\ simp [EVAL ``sw2sw ((8 >< 0) (255w : word64) : word9) : word64``,
+           EVAL ``sw2sw ((8 >< 0) (-256w : word64) : word9) : word64``]
+  \\ blastLib.FULL_BBLAST_TAC
+QED
+
+Theorem arm8_target_exact_ok:
+  ∀check_sp. target_ok (arm8_target_exact check_sp)
+Proof
+  gen_tac
+  \\ mp_tac arm8_targetProofTheory.arm8_encoder_correct
+  \\ simp [asmPropsTheory.encoder_correct_def, asmPropsTheory.target_ok_def,
+           asmPropsTheory.target_state_rel_def, arm8_target_exact_def, arm8_target_def]
+  \\ strip_tac \\ rpt strip_tac
+  \\ first_x_assum (qspecl_then [`ms1`, `ms2`, `s`] mp_tac)
+  \\ simp [] \\ metis_tac []
+QED
+
+Theorem arm8_target_exact_encoder_correct:
+  ∀check_sp. encoder_correct (arm8_target_exact check_sp)
+Proof
+  gen_tac
+  \\ simp [asmPropsTheory.encoder_correct_def, arm8_target_exact_ok]
+  \\ rpt strip_tac
+  \\ `target_state_rel arm8_target s1 ms` by
+       fs [asmPropsTheory.target_state_rel_def, arm8_target_exact_def, arm8_target_def]
+  \\ SUBGOAL_THEN ``check_sp ⇒ aligned 4 ms.SP_EL0`` assume_tac
+  >- fs [asmPropsTheory.target_state_rel_def, arm8_target_exact_def, arm8_target_def]
+  \\ mp_tac arm8_targetProofTheory.arm8_encoder_correct
+  \\ simp [asmPropsTheory.encoder_correct_def]
+  \\ strip_tac
+  \\ first_x_assum (qspecl_then [`s1`, `i`, `s2`, `ms`] mp_tac)
+  \\ impl_tac >- fs [arm8_target_exact_def, arm8_target_def]
+  \\ strip_tac
+  \\ qexists_tac `n`
+  \\ gen_tac \\ strip_tac
+  \\ `interference_ok env (arm8_target.proj s1.mem_domain)` by
+       (fs [asmPropsTheory.interference_ok_def, arm8_target_exact_def, arm8_target_def]
+        \\ metis_tac [pairTheory.PAIR_EQ])
+  \\ `∀k s. (env k s).SP_EL0 = s.SP_EL0 ∧ (env k s).PC = s.PC ∧ (env k s).REG = s.REG` by
+       (rpt strip_tac \\ fs [asmPropsTheory.interference_ok_def, arm8_target_exact_def, arm8_proj_def]
+        \\ first_x_assum (qspecl_then [`k`, `s`] mp_tac) \\ simp [])
+  \\ first_x_assum drule \\ simp [LET_THM] \\ strip_tac
+  \\ Cases_on `∃op r ad. i = Inst (Mem op r ad)`
+  >- (
+    (* Mem cases: either 1 instruction (n = 0) or 2 instructions (n ≤ 1) *)
+    pop_assum strip_assume_tac \\ rveq
+    \\ Cases_on `ad`
+    \\ rename1 `Inst (Mem op r1 (Addr r2 off_i))`
+    \\ `asm_ok (Inst (Mem op r1 (Addr r2 off_i))) arm8_config ∧
+        bytes_in_memory s1.pc (arm8_enc (Inst (Mem op r1 (Addr r2 off_i)))) s1.mem s1.mem_domain ∧
+        ¬s2.failed ∧ asm (Inst (Mem op r1 (Addr r2 off_i))) (s1.pc + n2w (LENGTH (arm8_enc (Inst (Mem op r1 (Addr r2 off_i)))))) s1 = s2` by
+         fs [asmSemTheory.asm_step_def, arm8_target_exact_def, arm8_target_def, arm8_config_def]
+    \\ `arm8_ok ms ∧ ms.PC = s1.pc ∧ ms.REG (n2w r2) = s1.regs r2 ∧
+        bytes_in_memory s1.pc (arm8_enc (Inst (Mem op r1 (Addr r2 off_i)))) ms.MEM s1.mem_domain` by
+         (Cases_on `op` \\ fs [arm8_asm_ok]
+          \\ fs [asmPropsTheory.target_state_rel_def, arm8_target_def, arm8_config_def]
+          \\ irule bytes_in_memory_cong_pcs0
+          \\ qexists_tac `s1.mem` \\ simp [] \\ rpt strip_tac
+          \\ qpat_x_assum `∀a. a ∈ s1.mem_domain ⇒ ms.MEM a = s1.mem a` irule
+          \\ drule asmPropsTheory.bytes_in_memory_all_pcs
+          \\ disch_then (qspec_then `0` mp_tac)
+          \\ simp [SUBSET_DEF])
+    \\ qabbrev_tac `c : word64 = i2w off_i`
+    \\ `r2 < 32 ∧ r2 ≠ 31` by (Cases_on `op` \\ fs [arm8_asm_ok])
+    \\ `n2w r2 ≠ (31w : word5)` by simp [reg_lt31_neq_31w]
+    (* Helper tactic: discharge 1-instruction LSI case *)
+    \\ `∀ins. arm8_ast (Inst (Mem op r1 (Addr r2 off_i))) = [ins] ∧
+              ((arm8$Next ms).exception = NoException ∧ (arm8$Next ms).SP_EL0 = ms.SP_EL0 ∧
+               (arm8$Next ms).PC = s1.pc + 4w) ⇒
+              asserts n (λk s. env (n - k) (arm8$Next s)) ms
+                (λms'. (arm8_target_exact check_sp).state_ok ms' ∧
+                       (∀pc. pc ∈ all_pcs (LENGTH (arm8_enc (Inst (Mem op r1 (Addr r2 off_i))))) s1.pc 0 ⇒
+                             ms'.MEM pc = ms.MEM pc) ∧
+                       ms'.PC ∈ all_pcs (LENGTH (arm8_enc (Inst (Mem op r1 (Addr r2 off_i))))) s1.pc 2)
+                (λms'. target_state_rel (arm8_target_exact check_sp) s2 ms') ∧
+              asserts2 (n + 1) (λk. env (n + 1 - k)) arm8$Next ms
+                (λms1 ms2. ∀x. x ∉ s1.mem_domain ⇒ ms1.MEM x = ms2.MEM x)` by
+         (gen_tac \\ strip_tac
+          \\ `arm8_next ms = arm8$Next ms` by simp [arm8_next_def, NextStateARM8_def]
+          \\ `LENGTH (arm8_enc (Inst (Mem op r1 (Addr r2 off_i)))) = 4` by
+               simp [arm8_enc_def, arm8_encode_LENGTH4]
+          \\ Cases_on `n`
+          >- (fs [asmPropsTheory.asserts_def, asserts2_0_SUC, arithmeticTheory.ONE,
+                  asmPropsTheory.target_state_rel_def, arm8_target_exact_def, arm8_target_def]
+              \\ Cases_on `check_sp` \\ gvs [])
+          \\ qpat_x_assum `asserts (SUC _) _ _ _ _` mp_tac
+          \\ simp [Once asmPropsTheory.asserts_def, LET_THM, arm8_target_def, arm8_config_def]
+          \\ strip_tac
+          \\ `s1.pc + 4w ∈ all_pcs 4 s1.pc 2` by gvs []
+          \\ fs [all_pcs_4_8])
+    (* Helper tactic: discharge 2-instruction AddSubImm + LSI case *)
+    \\ `∀ins0 ins1.
+          arm8_ast (Inst (Mem op r1 (Addr r2 off_i))) = [ins0; ins1] ∧
+          ((arm8$Next ms).exception = NoException ∧ (arm8$Next ms).SP_EL0 = ms.SP_EL0 ∧
+           (arm8$Next ms).PC = s1.pc + 4w) ∧
+          (∀ms1. arm8_ok ms1 ∧ ms1.PC = s1.pc + 4w ∧ ms1.REG = (arm8$Next ms).REG ∧
+                 bytes_in_memory (s1.pc + 4w) (arm8_encode ins1) ms1.MEM s1.mem_domain ⇒
+                 (arm8$Next ms1).exception = NoException ∧ (arm8$Next ms1).SP_EL0 = ms1.SP_EL0 ∧
+                 (arm8$Next ms1).PC = s1.pc + 8w) ⇒
+          asserts n (λk s. env (n - k) (arm8$Next s)) ms
+            (λms'. (arm8_target_exact check_sp).state_ok ms' ∧
+                   (∀pc. pc ∈ all_pcs (LENGTH (arm8_enc (Inst (Mem op r1 (Addr r2 off_i))))) s1.pc 0 ⇒
+                         ms'.MEM pc = ms.MEM pc) ∧
+                   ms'.PC ∈ all_pcs (LENGTH (arm8_enc (Inst (Mem op r1 (Addr r2 off_i))))) s1.pc 2)
+            (λms'. target_state_rel (arm8_target_exact check_sp) s2 ms') ∧
+          asserts2 (n + 1) (λk. env (n + 1 - k)) arm8$Next ms
+            (λms1 ms2. ∀x. x ∉ s1.mem_domain ⇒ ms1.MEM x = ms2.MEM x)` by
+         (rpt gen_tac \\ strip_tac
+          \\ `arm8_next ms = arm8$Next ms` by simp [arm8_next_def, NextStateARM8_def]
+          \\ `LENGTH (arm8_enc (Inst (Mem op r1 (Addr r2 off_i)))) = 8` by
+               simp [arm8_enc_def, arm8_encode_LENGTH4]
+          \\ Cases_on `n`
+          >- (fs [asmPropsTheory.asserts_def, asserts2_0_SUC, arithmeticTheory.ONE,
+                  asmPropsTheory.target_state_rel_def, arm8_target_exact_def, arm8_target_def]
+              \\ Cases_on `check_sp` \\ gvs [])
+          \\ qpat_x_assum `asserts (SUC _) _ _ _ _` mp_tac
+          \\ simp [Once asmPropsTheory.asserts_def, LET_THM, arm8_target_def, arm8_config_def]
+          \\ strip_tac
+          \\ qabbrev_tac `ms1 = env 0 (arm8$Next ms)`
+          \\ `bytes_in_memory (s1.pc + 4w) (arm8_encode ins1) ms1.MEM s1.mem_domain` by
+               (`bytes_in_memory s1.pc (arm8_enc (Inst (Mem op r1 (Addr r2 off_i)))) ms1.MEM s1.mem_domain` by
+                  (irule bytes_in_memory_cong_pcs0 \\ qexists_tac `ms.MEM` \\ simp [Abbr `ms1`])
+                \\ pop_assum mp_tac
+                \\ simp [arm8_enc_def, listTheory.LIST_BIND_def, miscTheory.bytes_in_memory_APPEND,
+                         arm8_encode_LENGTH4])
+          \\ `(arm8$Next ms1).exception = NoException ∧ (arm8$Next ms1).SP_EL0 = ms1.SP_EL0 ∧
+              (arm8$Next ms1).PC = s1.pc + 8w` by
+               (qpat_x_assum `∀ms1. _ ⇒ _` irule \\ simp [Abbr `ms1`])
+          \\ `arm8_next ms1 = arm8$Next ms1` by simp [arm8_next_def, NextStateARM8_def]
+          \\ Cases_on `n'`
+          >- (
+            qpat_x_assum `asserts2 (SUC 0 + 1) _ _ _ _` mp_tac
+            \\ qpat_x_assum `asserts 0 _ _ _ _` mp_tac
+            \\ ONCE_REWRITE_TAC [cj 3 asserts2_0_SUC]
+            \\ ONCE_REWRITE_TAC [cj 2 asserts2_0_SUC]
+            \\ REWRITE_TAC [cj 1 asserts2_0_SUC]
+            \\ `SUC 0 + 1 - (SUC 0 + 1) = 0 ∧ SUC 0 + 1 - SUC 0 = 1 ∧
+                SUC 0 - SUC 0 = 0 ∧ SUC 0 - 0 = 1` by decide_tac
+            \\ simp [asmPropsTheory.asserts_def, LET_THM,
+                     asmPropsTheory.target_state_rel_def, arm8_target_exact_def,
+                     arm8_target_def, arm8_config_def]
+            \\ `ms1.SP_EL0 = ms.SP_EL0 ∧ ms1.PC = s1.pc + 4w` by simp [Abbr `ms1`]
+            \\ rpt strip_tac \\ Cases_on `check_sp` \\ fs [])
+          \\ qpat_x_assum `asserts (SUC _) _ _ _ _` mp_tac
+          \\ simp [Once asmPropsTheory.asserts_def, LET_THM, arm8_target_def, arm8_config_def]
+          \\ strip_tac
+          \\ `s1.pc + 8w ∈ all_pcs 8 s1.pc 2` by gvs [Abbr `ms1`]
+          \\ fs [all_pcs_4_8])
+    (* Rewrite only target projections on goal to match H1 / H2 *)
+    \\ `(arm8_target_exact check_sp).next = arm8$Next ∧
+        (arm8_target_exact check_sp).config.encode = arm8_enc ∧
+        (arm8_target_exact check_sp).config.code_alignment = 2 ∧
+        (arm8_target_exact check_sp).get_byte = arm8_state_MEM ∧
+        (arm8_target_exact check_sp).get_pc = arm8_state_PC` by
+         simp [arm8_target_exact_def, arm8_target_def, arm8_config_def]
+    \\ pop_assum (fn th => REWRITE_TAC [th])
+    (* Now split on the 8 MemOp constructors *)
+    \\ Cases_on `op`
+    \\ fs [arm8_ast_def, arm8_load_store_ast_def, arm8_load_store_ast32_def, arm8_load_store_ast16_def,
+           arm8_asm_ok, asmSemTheory.asm_def, asmSemTheory.inst_def, asmSemTheory.upd_pc_def,
+           asmSemTheory.mem_op_def, asmSemTheory.addr_def, asmSemTheory.mem_load_def,
+           asmSemTheory.mem_store_def, asmSemTheory.assert_def, asmSemTheory.read_reg_def, LET_THM]
+    \\ rpt (pairarg_tac \\ fs [])
+    \\ qpat_x_assum `Abbrev (c = i2w off_i)` (fn th =>
+         FULL_SIMP_TAC pure_ss [SYM (REWRITE_RULE [markerTheory.Abbrev_def] th)] \\ assume_tac th)
+    \\ TRY (
+      (* Load8 / Store8: always 1 instruction *)
+      `0xFFFFFFFFFFFFFF00w ≤ c ∧ c ≤ 0xFFFw` by
+        (mp_tac (Q.SPEC `off_i` (cj 2 mem_offset_bounds)) \\ simp [Abbr `c`])
+      \\ `((¬word_msb c ∧ c = w2w ((11 >< 0) c : word12)) ∨ c = sw2sw ((8 >< 0) c : word9))` by
+           blastLib.FULL_BBLAST_TAC
+      \\ qpat_x_assum `(arm8$Next ms).exception = NoException ∧ _ ⇒ _` MATCH_MP_TAC
+      \\ qpat_x_assum `bytes_in_memory s1.pc (arm8_enc _) ms.MEM _` mp_tac
+      \\ simp [arm8_enc_def, listTheory.LIST_BIND_def, arm8_ast_def]
+      \\ qpat_x_assum `Abbrev (c = i2w off_i)` (fn th =>
+           REWRITE_TAC [SYM (REWRITE_RULE [markerTheory.Abbrev_def] th)] \\ assume_tac th)
+      \\ strip_tac
+      \\ qpat_x_assum `ms.PC = s1.pc` (fn th =>
+           qpat_x_assum `bytes_in_memory s1.pc (arm8_encode _) ms.MEM _`
+             (assume_tac o REWRITE_RULE [GSYM th]) \\ assume_tac th)
+      \\ ((qspecl_then [`MemOp_LOAD`, `¬word_msb c`, `c`, `n2w r2`, `n2w r1`] mp_tac dec_LSI8
+           \\ impl_tac >- simp [] \\ simp [] \\ strip_tac
+           \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` assume_tac
+           \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+           \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+          ORELSE
+          (qspecl_then [`MemOp_STORE`, `¬word_msb c`, `c`, `n2w r2`, `n2w r1`] mp_tac dec_LSI8
+           \\ impl_tac >- simp [] \\ simp [] \\ strip_tac
+           \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` assume_tac
+           \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+           \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC)))
+      \\ simp [Next_def, LET_THM]
+      \\ (mp_tac (Q.SPECL [`ms with branch_hint := NONE`, `rsw`, `mo`, `sg`, `wbu`, `rtu`, `uo`, `c`, `n2w r2`, `n2w r1`] lsi_Run_ok)
+          \\ impl_tac >- fs [arm8_ok_def, reg_lt31_neq_31w]
+          \\ disch_then (fn th => qspec_then `sz` mp_tac (cj 4 th))
+          \\ simp [LET_THM]) \\ NO_TAC)
+    \\ (* Load / Load32 / Load16 / Store / Store32 / Store16: 1 or 2 instructions *)
+       (`0xFFFFFFFFFFFFEF01w ≤ c ∧ c ≤ 0x10FEw` by
+          (mp_tac (Q.SPEC `off_i` (cj 1 mem_offset_bounds)) \\ simp [Abbr `c`])
+        \\ qpat_x_assum `¬s2.failed` (fn nf =>
+             qpat_x_assum `_ = s2` (fn eq =>
+               mp_tac (REWRITE_RULE [SYM eq] nf) \\ assume_tac eq))
+        \\ simp [EVAL ``LOG2 8``, EVAL ``LOG2 4``, EVAL ``LOG2 2``]
+        \\ strip_tac
+        \\ qpat_x_assum `∀ins. _ ⇒ _` mp_tac
+        \\ IF_CASES_TAC
+        >- (
+          (* 2-instruction Mem *)
+          disch_then assume_tac
+          \\ qabbrev_tac `b0 : word64 = if ¬word_msb c then c - 0xFFw else -c - 0x100w`
+          \\ qabbrev_tac `c0 : word64 = if ¬word_msb c then 0xFFw else -0x100w`
+         \\ `b = b0 ∧ c' = c0` by
+              (Cases_on `word_msb c` \\ gvs [Abbr `b0`, Abbr `c0`])
+         \\ pop_assum (fn th => FULL_SIMP_TAC pure_ss [th])
+         \\ fs []
+         \\ qpat_x_assum `_ ⇒ asserts n _ ms _ _ ∧ asserts2 _ _ arm8$Next ms _` MATCH_MP_TAC
+         \\ `(~0xFFFw && b0 = 0w) ∧ c0 = sw2sw ((8 >< 0) c0 : word9) ∧
+             (if word_msb c then ms.REG (n2w r2) - b0 else ms.REG (n2w r2) + b0) + c0 = ms.REG (n2w r2) + c` by
+              (simp [Abbr `b0`, Abbr `c0`] \\ mp_tac (Q.SPEC `c` mem_2inst_arith) \\ simp [])
+         \\ `bytes_in_memory ms.PC (arm8_encode (Data (AddSubImmediate@64 (1w, word_msb c, F, b0, n2w r2, 26w)))) ms.MEM s1.mem_domain` by
+              (qpat_x_assum `bytes_in_memory s1.pc (arm8_enc _) ms.MEM _` mp_tac
+               \\ simp [arm8_enc_def, listTheory.LIST_BIND_def, arm8_ast_def, arm8_load_store_ast_def,
+                        arm8_load_store_ast32_def, arm8_load_store_ast16_def, LET_THM,
+                        miscTheory.bytes_in_memory_APPEND]
+               \\ qpat_x_assum `Abbrev (c = i2w off_i)` (fn th =>
+                    REWRITE_TAC [SYM (REWRITE_RULE [markerTheory.Abbrev_def] th)] \\ assume_tac th)
+               \\ Cases_on `word_msb c` \\ fs [Abbr `b0`, Abbr `c0`])
+         \\ (qspecl_then [`word_msb c`, `b0`, `n2w r2`] mp_tac dec_AddSubImm_exact
+             \\ impl_tac >- simp []
+             \\ strip_tac)
+         \\ qpat_x_assum `Encode _ = ARM8 _` assume_tac
+         \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+         \\ strip_tac
+         \\ `(arm8$Next ms).exception = NoException ∧ (arm8$Next ms).SP_EL0 = ms.SP_EL0 ∧
+             (arm8$Next ms).PC = s1.pc + 4w ∧
+             (arm8$Next ms).REG 26w = (if word_msb c then ms.REG (n2w r2) - b0 else ms.REG (n2w r2) + b0)` by
+              (simp [Next_def, LET_THM]
+               \\ qspecl_then [`word_msb c`, `b0`, `n2w r2`, `ms`] mp_tac addsub_imm_Run_ok
+               \\ simp [LET_THM, reg_lt31_neq_31w])
+         \\ simp []
+         \\ rpt strip_tac
+         \\ `26w ≠ (31w : word5)` by EVAL_TAC
+         \\ `((¬word_msb c ∧ c0 = w2w ((11 >< 0) (c0 >>> 3) : word12) << 3) ∨ c0 = sw2sw ((8 >< 0) c0 : word9)) ∧
+             ((¬word_msb c ∧ c0 = w2w ((11 >< 0) (c0 >>> 2) : word12) << 2) ∨ c0 = sw2sw ((8 >< 0) c0 : word9)) ∧
+             ((¬word_msb c ∧ c0 = w2w ((11 >< 0) (c0 >>> 1) : word12) << 1) ∨ c0 = sw2sw ((8 >< 0) c0 : word9))` by simp []
+         \\ qpat_x_assum `bytes_in_memory (s1.pc + 4w) _ ms1.MEM _` mp_tac
+         \\ simp [] \\ strip_tac
+         \\ qpat_x_assum `ms1.PC = s1.pc + 4w` (fn th =>
+              qpat_x_assum `bytes_in_memory (s1.pc + 4w) _ ms1.MEM _`
+                (assume_tac o REWRITE_RULE [GSYM th]) \\ assume_tac th)
+         \\ ((qspecl_then [`MemOp_LOAD`, `¬word_msb c`, `c0`, `26w`, `n2w r1`] mp_tac dec_LSI64
+              \\ impl_tac >- simp [] \\ simp [] \\ strip_tac
+              \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` (fn eth =>
+                   drule_all (MATCH_MP (REWRITE_RULE [GSYM AND_IMP_INTRO]
+                     (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)) eth))
+              \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+             ORELSE
+             (qspecl_then [`MemOp_STORE`, `¬word_msb c`, `c0`, `26w`, `n2w r1`] mp_tac dec_LSI64
+              \\ impl_tac >- simp [] \\ simp [] \\ strip_tac
+              \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` (fn eth =>
+                   drule_all (MATCH_MP (REWRITE_RULE [GSYM AND_IMP_INTRO]
+                     (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)) eth))
+              \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+             ORELSE
+             (qspecl_then [`MemOp_LOAD`, `¬word_msb c`, `c0`, `26w`, `n2w r1`] mp_tac dec_LSI32
+              \\ impl_tac >- simp [] \\ simp [] \\ strip_tac
+              \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` (fn eth =>
+                   drule_all (MATCH_MP (REWRITE_RULE [GSYM AND_IMP_INTRO]
+                     (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)) eth))
+              \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+             ORELSE
+             (qspecl_then [`MemOp_STORE`, `¬word_msb c`, `c0`, `26w`, `n2w r1`] mp_tac dec_LSI32
+              \\ impl_tac >- simp [] \\ simp [] \\ strip_tac
+              \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` (fn eth =>
+                   drule_all (MATCH_MP (REWRITE_RULE [GSYM AND_IMP_INTRO]
+                     (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)) eth))
+              \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+             ORELSE
+             (qspecl_then [`MemOp_LOAD`, `¬word_msb c`, `c0`, `26w`, `n2w r1`] mp_tac dec_LSI16
+              \\ impl_tac >- simp [] \\ simp [] \\ strip_tac
+              \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` (fn eth =>
+                   drule_all (MATCH_MP (REWRITE_RULE [GSYM AND_IMP_INTRO]
+                     (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)) eth))
+              \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+             ORELSE
+             (qspecl_then [`MemOp_STORE`, `¬word_msb c`, `c0`, `26w`, `n2w r1`] mp_tac dec_LSI16
+              \\ impl_tac >- simp [] \\ simp [] \\ strip_tac
+              \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` (fn eth =>
+                   drule_all (MATCH_MP (REWRITE_RULE [GSYM AND_IMP_INTRO]
+                     (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)) eth))
+              \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC)))
+         \\ simp [Next_def, LET_THM]
+         \\ (mp_tac (Q.SPECL [`ms1 with branch_hint := NONE`, `rsw`, `mo`, `sg`, `wbu`, `rtu`, `uo`, `c0`, `26w`, `n2w r1`] lsi_Run_ok)
+             \\ impl_tac >- fs [arm8_ok_def]
+             \\ strip_tac)
+         \\ `s1.pc + 4w + 4w = s1.pc + 8w` by blastLib.BBLAST_TAC
+         \\ `(ms1 with branch_hint := NONE).REG 26w + c0 = c + s1.regs r2` by
+              (simp [] \\ Cases_on `word_msb c` \\ fs [Abbr `b0`, Abbr `c0`] \\ blastLib.BBLAST_TAC)
+         \\ pop_assum (fn th => rpt (qpat_x_assum `∀sz. _` (assume_tac o REWRITE_RULE [th] o Q.SPEC `sz`)))
+         \\ rfs [LET_THM])
+       \\ (* 1-instruction Mem *)
+          disch_then assume_tac
+          \\ fs []
+          \\ qpat_x_assum `_ ⇒ asserts n _ ms _ _ ∧ asserts2 _ _ arm8$Next ms _` MATCH_MP_TAC
+          \\ qpat_x_assum `bytes_in_memory s1.pc (arm8_enc _) ms.MEM _` mp_tac
+          \\ simp [arm8_enc_def, listTheory.LIST_BIND_def, arm8_ast_def, arm8_load_store_ast_def,
+                   arm8_load_store_ast32_def, arm8_load_store_ast16_def, LET_THM]
+          \\ qpat_x_assum `Abbrev (c = i2w off_i)` (fn th =>
+               REWRITE_TAC [SYM (REWRITE_RULE [markerTheory.Abbrev_def] th)] \\ assume_tac th)
+          \\ simp [listTheory.LIST_BIND_def]
+          \\ strip_tac
+          \\ qpat_x_assum `ms.PC = s1.pc` (fn th =>
+               qpat_x_assum `bytes_in_memory s1.pc (arm8_encode _) ms.MEM _`
+                 (assume_tac o REWRITE_RULE [GSYM th]) \\ assume_tac th)
+          \\ ((qspecl_then [`MemOp_LOAD`, `¬word_msb c`, `c`, `n2w r2`, `n2w r1`] mp_tac dec_LSI64
+               \\ impl_tac >- (Cases_on `word_msb c` \\ fs [] \\ Cases_on `c = sw2sw ((8 >< 0) c : word9)` \\ fs []) \\ simp [] \\ strip_tac \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` assume_tac
+               \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+               \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+              ORELSE
+              (qspecl_then [`MemOp_STORE`, `¬word_msb c`, `c`, `n2w r2`, `n2w r1`] mp_tac dec_LSI64
+               \\ impl_tac >- (Cases_on `word_msb c` \\ fs [] \\ Cases_on `c = sw2sw ((8 >< 0) c : word9)` \\ fs []) \\ simp [] \\ strip_tac \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` assume_tac
+               \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+               \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+              ORELSE
+              (qspecl_then [`MemOp_LOAD`, `¬word_msb c`, `c`, `n2w r2`, `n2w r1`] mp_tac dec_LSI32
+               \\ impl_tac >- (Cases_on `word_msb c` \\ fs [] \\ Cases_on `c = sw2sw ((8 >< 0) c : word9)` \\ fs []) \\ simp [] \\ strip_tac \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` assume_tac
+               \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+               \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+              ORELSE
+              (qspecl_then [`MemOp_STORE`, `¬word_msb c`, `c`, `n2w r2`, `n2w r1`] mp_tac dec_LSI32
+               \\ impl_tac >- (Cases_on `word_msb c` \\ fs [] \\ Cases_on `c = sw2sw ((8 >< 0) c : word9)` \\ fs []) \\ simp [] \\ strip_tac \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` assume_tac
+               \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+               \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+              ORELSE
+              (qspecl_then [`MemOp_LOAD`, `¬word_msb c`, `c`, `n2w r2`, `n2w r1`] mp_tac dec_LSI16
+               \\ impl_tac >- (Cases_on `word_msb c` \\ fs [] \\ Cases_on `c = sw2sw ((8 >< 0) c : word9)` \\ fs []) \\ simp [] \\ strip_tac \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` assume_tac
+               \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+               \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC))
+              ORELSE
+              (qspecl_then [`MemOp_STORE`, `¬word_msb c`, `c`, `n2w r2`, `n2w r1`] mp_tac dec_LSI16
+               \\ impl_tac >- (Cases_on `word_msb c` \\ fs [] \\ Cases_on `c = sw2sw ((8 >< 0) c : word9)` \\ fs []) \\ simp [] \\ strip_tac \\ qpat_x_assum `Encode (LoadStore _) = ARM8 _` assume_tac
+               \\ drule_all (ONCE_REWRITE_RULE [DECIDE ``(a ∧ b ∧ c ⇒ d) ⇔ (b ∧ a ∧ c ⇒ d)``] bytes_in_mem_encode_fetch)
+               \\ disch_then (fn th => if is_eq (concl th) then assume_tac th else NO_TAC)))
+          \\ simp [Next_def, LET_THM]
+          \\ (mp_tac (Q.SPECL [`ms with branch_hint := NONE`, `rsw`, `mo`, `sg`, `wbu`, `rtu`, `uo`, `c`, `n2w r2`, `n2w r1`] lsi_Run_ok)
+              \\ impl_tac >- fs [arm8_ok_def, reg_lt31_neq_31w]
+              \\ strip_tac)
+          \\ `(ms with branch_hint := NONE).REG (n2w r2) + c = c + s1.regs r2` by
+               (simp [] \\ blastLib.BBLAST_TAC)
+          \\ pop_assum (fn th => rpt (qpat_x_assum `∀sz. _` (assume_tac o REWRITE_RULE [th] o Q.SPEC `sz`)))
+          \\ rfs [LET_THM]))
+  \\ (* All non-Mem instructions: single uniform lift via asserts_arm8_exact_lift! *)
+     `asm_ok i arm8_config ∧ bytes_in_memory s1.pc (arm8_enc i) ms.MEM s1.mem_domain` by
+       (fs [asmSemTheory.asm_step_def, asmPropsTheory.target_state_rel_def,
+            arm8_target_exact_def, arm8_target_def, arm8_config_def]
+        \\ irule bytes_in_memory_cong_pcs0
+        \\ qexists_tac `s1.mem` \\ simp [] \\ rpt strip_tac
+        \\ `a ∈ s1.mem_domain` by
+             (drule asmPropsTheory.bytes_in_memory_all_pcs
+              \\ disch_then (qspec_then `0` mp_tac) \\ simp [SUBSET_DEF])
+        \\ simp [])
+  \\ qabbrev_tac `P_next = λms':arm8_state.
+       (∀pc. pc ∈ all_pcs (LENGTH (arm8_enc i)) s1.pc 0 ⇒ ms'.MEM pc = ms.MEM pc) ∧
+       ms'.PC ∈ all_pcs (LENGTH (arm8_enc i)) s1.pc 2`
+  \\ SUBGOAL_THEN ``¬check_sp ∨ aligned 4 ms.SP_EL0`` assume_tac
+  >- (Cases_on `check_sp` \\ fs [])
+  \\ qspecl_then [`n`, `env`, `ms`, `P_next`, `λms'. target_state_rel arm8_target s2 ms'`,
+                  `s1.mem_domain`, `check_sp`] mp_tac asserts_arm8_exact_lift
+  \\ impl_tac
+  >- (
+    simp [Abbr `P_next`]
+    \\ rpt conj_tac
+    >- fs [asmPropsTheory.target_state_rel_def, arm8_target_def]
+    >- (simp [asmPropsTheory.all_pcs_thm] \\ qexists_tac `0`
+        \\ `ms.PC = s1.pc` by fs [asmPropsTheory.target_state_rel_def, arm8_target_def]
+        \\ simp [arm8_enc_def, LIST_BIND_arm8_encode_LENGTH]
+        \\ mp_tac (Q.SPEC `i` arm8_targetProofTheory.arm8_encoding)
+        \\ simp [arm8_enc_def]
+        \\ Cases_on `arm8_ast i` \\ simp [])
+    >- (
+      rpt strip_tac
+      \\ `bytes_in_memory s1.pc (arm8_enc i) s.MEM s1.mem_domain` by
+           (irule bytes_in_memory_cong_pcs0 \\ qexists_tac `ms.MEM` \\ simp [])
+      \\ fs [asmPropsTheory.all_pcs_thm, arm8_enc_def, LIST_BIND_arm8_encode_LENGTH]
+      \\ `i' < LENGTH (arm8_ast i)` by decide_tac
+      \\ `bytes_in_memory s.PC (arm8_encode (EL i' (arm8_ast i))) s.MEM s1.mem_domain` by
+           (`s.PC = s1.pc + n2w (4 * i')` by (`i' * 4 = 4 * i'` by decide_tac \\ simp [])
+            \\ pop_assum SUBST1_TAC
+            \\ irule bytes_in_memory_all_pcs_elem \\ simp [])
+      \\ qspecl_then [`i`, `EL i' (arm8_ast i)`, `s`, `s1.mem_domain`] mp_tac arm8_ast_nonmem_step_ok
+      \\ simp [listTheory.EL_MEM] \\ metis_tac [])
+    >- fs [arm8_target_def, arm8_config_def]
+    \\ fs [arm8_target_def])
+  \\ simp [Abbr `P_next`, arm8_target_exact_def, arm8_target_def, arm8_config_def, CONJ_ASSOC]
+  \\ disch_then (fn th => simp [cj 2 th] \\ assume_tac (cj 1 th))
+  \\ `∀m f (s:arm8_state) P1 Q1.
+        asserts m f s P1 Q1 ⇒
+        ∀P2 Q2. (∀x. P1 x ⇔ P2 x) ∧ (∀x. Q1 x ⇒ Q2 x) ⇒ asserts m f s P2 Q2` by
+       (Induct_on `m` >- simp [asmPropsTheory.asserts_def]
+        \\ rpt strip_tac \\ fs [asmPropsTheory.asserts_def, LET_THM] \\ metis_tac [])
+  \\ pop_assum (fn mth => pop_assum (fn th1 => HO_MATCH_MP_TAC (MATCH_MP mth th1)))
+  \\ simp [asmPropsTheory.target_state_rel_def, arm8_target_def, arm8_config_def, CONJ_ASSOC]
+QED
+
+(* ---- 5. Unconditional Real-Bits Machine-Semantics Equivalence (Zero b ≠ Fail Premise) ---- *)
 
 Theorem erase_idem:
   ∀s. erase (erase s) = erase s
@@ -867,233 +2220,126 @@ Proof
   simp [FUN_EQ_THM, miscTheory.shift_seq_def]
 QED
 
-(* Unconditional safety transfer: zero extra NextStateARM8 / SP_EL0 step premises *)
-Theorem real_mc_evaluate_nonerror_eq:
-  ∀k mc B ffi ms.
-    mc.target = arm8_target ∧
-    mc.mmio_info = [] ∧
-    lo55 mc ∧
-    interference_ok mc.next_interfer (arm8_target.proj mc.prog_addresses) ∧
-    interfer_sp_bits_ok mc ∧
-    bits_of ms = B ∧
-    (¬SND (SND B) ∨ aligned 4 ms.SP_EL0) ∧
-    (∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error) ∧
-    FST (evaluate (real_mc B mc) ffi k ms) ≠ Error ⇒
-    let (res, rms', ffi') = evaluate (real_mc B mc) ffi k ms in
-      evaluate mc ffi k (erase ms) = (res, erase rms', ffi') ∧
-      bits_of rms' = B ∧ (¬SND (SND B) ∨ aligned 4 rms'.SP_EL0)
+Theorem erase_mc_next_interfer_K_I[local]:
+  ∀B mc. mc.next_interfer = K I ⇒
+    (erase_mc B mc with next_interfer := shift_seq 1 (K I)) = erase_mc B mc ∧
+    (erase_mc B mc with next_interfer := shift_seq 1 (erase_mc B mc).next_interfer) =
+    erase_mc B mc
 Proof
-  Induct_on `k`
-  >- (rpt gen_tac \\ strip_tac \\ simp [Once evaluate_def] \\ once_rewrite_tac [evaluate_def] \\ simp [])
-  \\ rpt gen_tac \\ disch_then (REPEAT_TCL CONJUNCTS_THEN assume_tac)
-  \\ PairCases_on `B`
-  \\ qpat_x_assum `¬SND (SND _) ∨ _` (assume_tac o SIMP_RULE (srw_ss()) [])
-  \\ qpat_x_assum `FST (evaluate (real_mc _ mc) _ _ _) ≠ Error` mp_tac
-  \\ once_rewrite_tac [evaluate_def]
-  \\ simp [real_mc_def, arm8_target_real_def, erase_fields, arm8_target_def]
-  \\ Cases_on `ms.PC ∈ mc.prog_addresses ∧ ¬MEM ms.PC mc.ffi_entry_pcs` \\ simp []
-  >- (
-    Cases_on `encoded_bytes_in_mem arm8_config ms.PC ms.MEM mc.prog_addresses` \\ simp []
-    \\ simp [apply_oracle_def]
-    \\ qabbrev_tac `rms2 = restore (B0,B1,B2) (mc.next_interfer 0 (erase (Next ms)))`
-    \\ qabbrev_tac `mc1 = mc with next_interfer := (λk'. mc.next_interfer (k' + 1))`
-    \\ IF_CASES_TAC \\ simp []
-    \\ strip_tac
-    \\ qpat_x_assum `(arm8_ok _ ∧ _) ∧ _` (REPEAT_TCL CONJUNCTS_THEN assume_tac)
-    \\ `sp_ok ms` by fs [sp_ok_def, arm8_ok_erase, bits_of_def]
-    \\ `(Next ms).exception = NoException` by fs [arm8_ok_erase]
-    \\ `(Next (erase ms)).exception = NoException` by (drule Next_exception_erase \\ simp [])
-    \\ `NextStateARM8 (erase ms) = SOME (Next (erase ms))` by simp [NextStateARM8_def, LET_THM]
-    \\ `arm8_next (erase ms) = Next (erase ms)` by simp [arm8_next_def]
-    \\ qabbrev_tac `ms2 = mc.next_interfer 0 (Next (erase ms))`
-    \\ `arm8_ok (Next (erase ms)) ∧ arm8_ok ms2 ∧
-        (∀x. x ∉ mc.prog_addresses ⇒ (Next (erase ms)).MEM x = ms.MEM x) ∧
-        ∀j. FST (evaluate mc1 ffi j ms2) ≠ Error` by
-      (rpt conj_tac
-       >- (qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `1` mp_tac)
-           \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def, Abbr `ms2`]
-           \\ IF_CASES_TAC \\ fs [])
-       >- (qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `1` mp_tac)
-           \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def, Abbr `ms2`]
-           \\ IF_CASES_TAC \\ fs [])
-       >- (qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `1` mp_tac)
-           \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def, Abbr `ms2`]
-           \\ IF_CASES_TAC \\ fs [])
-       \\ gen_tac
-       \\ qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `SUC j` mp_tac)
-       \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def,
-                Abbr `mc1`, Abbr `ms2`, shift_seq_1]
-       \\ IF_CASES_TAC \\ fs [])
-    \\ `ms2.PC = (Next (erase ms)).PC` by (unabbrev_all_tac \\ drule interference_ok_arm8_pc \\ simp [])
-    \\ `untagged (Next (erase ms)).PC` by
-      (qspecl_then [`mc1`, `ffi`, `ms2`] mp_tac evaluate_non_error_pc_valid
-       \\ simp [Abbr `mc1`] \\ strip_tac \\ fs [lo55_def])
-    \\ `Next (erase ms) = erase (Next ms)` by (drule_all Next_erase \\ simp [])
-    \\ `erase rms2 = ms2` by
-      (simp [Abbr `rms2`, Abbr `ms2`, erase_restore]
-       \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-       \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-       \\ qpat_x_assum `∀k s. erase s = s ⇒ _` (qspecl_then [`0`, `erase (Next ms)`] mp_tac)
-       \\ simp [erase_idem])
-    \\ first_x_assum (qspecl_then [`mc1`, `(B0,B1,B2)`, `ffi`, `rms2`] mp_tac)
-    \\ (impl_tac
-        >- (simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                  interfer_sp_bits_ok_shifts, ETA_THM]
-            \\ rpt conj_tac
-            >- (qpat_x_assum `lo55 mc` mp_tac \\ simp [lo55_def])
-            >- (irule interference_ok_shift \\ qpat_x_assum `interference_ok _ _` mp_tac \\ simp [arm8_target_def])
-            >- (qpat_x_assum `FST (evaluate _ _ _ _) ≠ Error` mp_tac \\ simp [shift_seq_1, ETA_THM]))
-        \\ simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                 shift_seq_1, ETA_THM]
-        \\ `arm8_ok (mc.next_interfer 0 (erase (Next ms))) ∧
-            ∀x. x ∉ mc.prog_addresses ⇒ (erase (Next ms)).MEM x = ms.MEM x` by fs [Abbr `ms2`]
-        \\ simp [Abbr `ms2`]))
-  \\ Cases_on `ms.PC = mc.halt_pc` \\ simp []
-  \\ Cases_on `ms.PC = mc.install_pc` \\ simp []
-  >- (
-    qmatch_goalsub_abbrev_tac `read_ffi_bytearray rmc_tmp`
-    \\ `read_ffi_bytearray rmc_tmp mc.ptr_reg mc.len_reg ms =
-        read_ffi_bytearray mc mc.ptr_reg mc.len_reg (erase ms)` by
-         simp [Abbr `rmc_tmp`, read_ffi_bytearray_def, erase_fields, arm8_target_def]
-    \\ Cases_on `read_ffi_bytearray mc mc.ptr_reg mc.len_reg (erase ms)` \\ simp []
-    \\ simp [apply_oracle_def]
-    \\ strip_tac
-    \\ qabbrev_tac `mc1 = mc with install_interfer := (λk'. mc.install_interfer (k' + 1))`
-    \\ qabbrev_tac `ms1 = mc.install_interfer 0 (x, erase ms)`
-    \\ qabbrev_tac `rms1 = restore (B0,B1,B2) ms1`
-    \\ `∀j. FST (evaluate mc1 ffi j ms1) ≠ Error` by
-      (gen_tac
-       \\ qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `SUC j` mp_tac)
-       \\ qpat_x_assum `¬(_ ∧ _)` mp_tac \\ qpat_x_assum `ms.PC ≠ mc.halt_pc` mp_tac
-       \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def,
-                Abbr `mc1`, Abbr `ms1`, shift_seq_1]
-       \\ rw [])
-    \\ `erase rms1 = ms1` by
-      (simp [Abbr `rms1`, Abbr `ms1`, erase_restore]
-       \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-       \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-       \\ qpat_x_assum `∀k bs s. erase s = s ⇒ _` (qspecl_then [`0`, `x`, `erase ms`] mp_tac)
-       \\ simp [erase_idem])
-    \\ `bits_of rms1 = (B0,B1,B2)` by simp [Abbr `rms1`, bits_of_restore]
-    \\ `¬B2 ∨ aligned 4 rms1.SP_EL0` by
-      (Cases_on `B2` \\ simp [Abbr `rms1`, restore_def, Abbr `ms1`]
-       \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-       \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-       \\ qpat_x_assum `∀k bs s. aligned 4 s.SP_EL0 ⇒ _` irule \\ fs [erase_fields])
-    \\ first_x_assum (qspecl_then [`mc1`, `(B0,B1,B2)`, `ffi`, `rms1`] mp_tac)
-    \\ (impl_tac
-        >- (simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                  interfer_sp_bits_ok_shifts, ETA_THM]
-            \\ rpt conj_tac
-            >- (qpat_x_assum `lo55 mc` mp_tac \\ simp [lo55_def])
-            >- (qpat_x_assum `interference_ok _ _` mp_tac \\ simp [arm8_target_def])
-            >- (qpat_x_assum `FST (evaluate _ _ _ _) ≠ Error` mp_tac \\ simp [shift_seq_1, ETA_THM]))
-        \\ simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                 shift_seq_1, ETA_THM, Abbr `ms1`]))
-  \\ Cases_on `find_index ms.PC mc.ffi_entry_pcs 0` \\ simp []
-  \\ Cases_on `EL x mc.ffi_names` \\ simp []
-  \\ rename1 `EL x mc.ffi_names = ExtCall fnm`
-  \\ qmatch_goalsub_abbrev_tac `read_ffi_bytearrays rmc_tmp`
-  \\ `read_ffi_bytearrays rmc_tmp ms = read_ffi_bytearrays mc (erase ms)` by
-       simp [Abbr `rmc_tmp`, read_ffi_bytearrays_def, read_ffi_bytearray_def,
-             erase_fields, arm8_target_def]
-  \\ Cases_on `read_ffi_bytearrays mc (erase ms)` \\ simp []
-  \\ Cases_on `q` \\ Cases_on `r` \\ simp []
-  \\ Cases_on `call_FFI ffi (ExtCall fnm) x' x''` \\ simp []
-  \\ rename1 `call_FFI ffi (ExtCall fnm) x' x'' = FFI_return ffi1 new_bs`
-  \\ simp [apply_oracle_def]
-  \\ strip_tac
-  \\ qabbrev_tac `mc1 = mc with ffi_interfer := (λk'. mc.ffi_interfer (k' + 1))`
-  \\ qabbrev_tac `ms1 = mc.ffi_interfer 0 (x, new_bs, erase ms)`
-  \\ qabbrev_tac `rms1 = restore (B0,B1,B2) ms1`
-  \\ `∀j. FST (evaluate mc1 ffi1 j ms1) ≠ Error` by
-    (gen_tac
-     \\ qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `SUC j` mp_tac)
-     \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def,
-              Abbr `mc1`, Abbr `ms1`, shift_seq_1]
-     \\ rw [])
-  \\ `erase rms1 = ms1` by
-    (simp [Abbr `rms1`, Abbr `ms1`, erase_restore]
-     \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-     \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-     \\ qpat_x_assum `∀k i bs s. erase s = s ⇒ _` (qspecl_then [`0`, `x`, `new_bs`, `erase ms`] mp_tac)
-     \\ simp [erase_idem])
-  \\ `bits_of rms1 = (B0,B1,B2)` by simp [Abbr `rms1`, bits_of_restore]
-  \\ `¬B2 ∨ aligned 4 rms1.SP_EL0` by
-    (Cases_on `B2` \\ simp [Abbr `rms1`, restore_def, Abbr `ms1`]
-     \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-     \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-     \\ qpat_x_assum `∀k i bs s. aligned 4 s.SP_EL0 ⇒ _` irule \\ fs [erase_fields])
-  \\ first_x_assum (qspecl_then [`mc1`, `(B0,B1,B2)`, `ffi1`, `rms1`] mp_tac)
-  \\ (impl_tac
-      >- (simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                interfer_sp_bits_ok_shifts, ETA_THM]
-          \\ rpt conj_tac
-          >- (qpat_x_assum `lo55 mc` mp_tac \\ simp [lo55_def])
-          >- (qpat_x_assum `interference_ok _ _` mp_tac \\ simp [arm8_target_def])
-          >- (qpat_x_assum `FST (evaluate _ _ _ _) ≠ Error` mp_tac \\ simp [shift_seq_1, ETA_THM]))
-      \\ simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-               shift_seq_1, ETA_THM, Abbr `ms1`])
+  rpt strip_tac
+  \\ simp [erase_mc_def, shift_seq_1, FUN_EQ_THM, targetSemTheory.machine_config_component_equality]
 QED
 
-Theorem machine_sem_real_safety:
-  ∀mc B ffi ms b.
-    mc.target = arm8_target ∧
-    mc.mmio_info = [] ∧
-    lo55 mc ∧
-    interference_ok mc.next_interfer (arm8_target.proj mc.prog_addresses) ∧
-    interfer_sp_bits_ok mc ∧
-    bits_of ms = B ∧
-    (¬SND (SND B) ∨ aligned 4 ms.SP_EL0) ∧
-    ¬machine_sem mc ffi (erase ms) Fail ∧
-    b ≠ Fail ∧
-    machine_sem (real_mc B mc) ffi ms b ⇒
-    machine_sem mc ffi (erase ms) b
+Theorem real_mc_next_interfer_K_I[local]:
+  ∀B mc. mc.next_interfer = K I ⇒
+    (real_mc B mc with next_interfer := shift_seq 1 (K I)) = real_mc B mc ∧
+    (real_mc B mc with next_interfer := shift_seq 1 (real_mc B mc).next_interfer) =
+    real_mc B mc
 Proof
-  rpt gen_tac \\ disch_then (REPEAT_TCL CONJUNCTS_THEN assume_tac)
-  \\ `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` by
-       (qpat_x_assum `¬machine_sem _ _ _ _` mp_tac \\ simp [machine_sem_def])
-  \\ qpat_x_assum `b ≠ Fail` mp_tac
-  \\ qpat_x_assum `machine_sem (real_mc _ _) _ _ _` mp_tac
-  \\ Cases_on `b` \\ simp [machine_sem_def]
-  >- (
-    disch_then strip_assume_tac \\ conj_tac
-    >- (
-      gen_tac
-      \\ qpat_x_assum `∀k. ∃ms' st'. evaluate (real_mc _ _) _ _ _ = _` (qspec_then `k` strip_assume_tac)
-      \\ qspecl_then [`k`, `mc`, `B`, `ffi`, `ms`] mp_tac real_mc_evaluate_nonerror_eq
-      \\ simp [] \\ strip_tac
-      \\ qexists_tac `erase ms'` \\ qexists_tac `st'` \\ simp [])
-    \\ `∀k. (SND (SND (evaluate mc ffi k (erase ms)))).io_events =
-            (SND (SND (evaluate (real_mc B mc) ffi k ms))).io_events` by
-      (gen_tac
-       \\ qpat_x_assum `∀k. ∃ms' st'. evaluate (real_mc _ _) _ _ _ = _` (qspec_then `k` strip_assume_tac)
-       \\ qspecl_then [`k`, `mc`, `B`, `ffi`, `ms`] mp_tac real_mc_evaluate_nonerror_eq
-       \\ simp [] \\ strip_tac \\ simp [])
-    \\ simp [])
-  \\ disch_then strip_assume_tac
-  \\ qspecl_then [`k`, `mc`, `B`, `ffi`, `ms`] mp_tac real_mc_evaluate_nonerror_eq
-  \\ simp [] \\ strip_tac
-  \\ qexists_tac `k` \\ qexists_tac `erase ms'` \\ qexists_tac `st'` \\ simp []
+  rpt strip_tac
+  \\ simp [real_mc_def, shift_seq_1, FUN_EQ_THM, targetSemTheory.machine_config_component_equality]
 QED
 
-(* Full equivalence including ¬Fail when every stepped instruction is fault-free and SP-preserving *)
-Theorem real_mc_evaluate_eq:
+Theorem real_erase_mc_fields[local]:
+  ∀B mc.
+    (real_mc B mc).prog_addresses = mc.prog_addresses ∧
+    (real_mc B mc).ffi_entry_pcs = mc.ffi_entry_pcs ∧
+    (real_mc B mc).ffi_names = mc.ffi_names ∧
+    (real_mc B mc).halt_pc = mc.halt_pc ∧
+    (real_mc B mc).install_pc = mc.install_pc ∧
+    (real_mc B mc).ptr_reg = mc.ptr_reg ∧
+    (real_mc B mc).len_reg = mc.len_reg ∧
+    (real_mc B mc).ptr2_reg = mc.ptr2_reg ∧
+    (real_mc B mc).len2_reg = mc.len2_reg ∧
+    (real_mc B mc).mmio_info = mc.mmio_info ∧
+    (real_mc B mc).next_interfer = mc.next_interfer ∧
+    (real_mc B mc).ffi_interfer = mc.ffi_interfer ∧
+    (real_mc B mc).install_interfer = mc.install_interfer ∧
+    (real_mc B mc).target = arm8_target_real B ∧
+    (erase_mc B mc).prog_addresses = mc.prog_addresses ∧
+    (erase_mc B mc).ffi_entry_pcs = mc.ffi_entry_pcs ∧
+    (erase_mc B mc).ffi_names = mc.ffi_names ∧
+    (erase_mc B mc).halt_pc = mc.halt_pc ∧
+    (erase_mc B mc).install_pc = mc.install_pc ∧
+    (erase_mc B mc).ptr_reg = mc.ptr_reg ∧
+    (erase_mc B mc).len_reg = mc.len_reg ∧
+    (erase_mc B mc).ptr2_reg = mc.ptr2_reg ∧
+    (erase_mc B mc).len2_reg = mc.len2_reg ∧
+    (erase_mc B mc).mmio_info = mc.mmio_info ∧
+    (erase_mc B mc).next_interfer = mc.next_interfer ∧
+    (erase_mc B mc).ffi_interfer = (λk (i,bs,s). erase (mc.ffi_interfer k (i,bs,restore B s))) ∧
+    (erase_mc B mc).install_interfer = (λk (bs,s). erase (mc.install_interfer k (bs,restore B s))) ∧
+    (erase_mc B mc).target = arm8_target_exact (SND (SND B))
+Proof
+  simp [real_mc_def, erase_mc_def]
+QED
+
+Theorem real_erase_mc_shift_install[local]:
+  ∀B mc.
+    (real_mc B mc with install_interfer := shift_seq 1 mc.install_interfer) =
+    real_mc B (mc with install_interfer := shift_seq 1 mc.install_interfer) ∧
+    (erase_mc B mc with install_interfer :=
+       shift_seq 1 (λk (bs,s). erase (mc.install_interfer k (bs,restore B s)))) =
+    erase_mc B (mc with install_interfer := shift_seq 1 mc.install_interfer) ∧
+    (erase_mc B mc with install_interfer := shift_seq 1 (erase_mc B mc).install_interfer) =
+    erase_mc B (mc with install_interfer := shift_seq 1 mc.install_interfer)
+Proof
+  simp [real_mc_def, erase_mc_def, shift_seq_1, FUN_EQ_THM,
+        targetSemTheory.machine_config_component_equality]
+QED
+
+Theorem real_erase_mc_shift_ffi[local]:
+  ∀B mc.
+    (real_mc B mc with ffi_interfer := shift_seq 1 mc.ffi_interfer) =
+    real_mc B (mc with ffi_interfer := shift_seq 1 mc.ffi_interfer) ∧
+    (erase_mc B mc with ffi_interfer :=
+       shift_seq 1 (λk (i,bs,s). erase (mc.ffi_interfer k (i,bs,restore B s)))) =
+    erase_mc B (mc with ffi_interfer := shift_seq 1 mc.ffi_interfer) ∧
+    (erase_mc B mc with ffi_interfer := shift_seq 1 (erase_mc B mc).ffi_interfer) =
+    erase_mc B (mc with ffi_interfer := shift_seq 1 mc.ffi_interfer)
+Proof
+  simp [real_mc_def, erase_mc_def, shift_seq_1, FUN_EQ_THM,
+        targetSemTheory.machine_config_component_equality]
+QED
+
+Theorem evaluate_exact_non_error_pc_valid[local]:
+  ∀mc B ffi ms.
+    FST (evaluate (erase_mc B mc) ffi 1 ms) ≠ Error ⇒
+    ms.PC ∈ mc.prog_addresses ∨ ms.PC = mc.halt_pc ∨
+    ms.PC = mc.install_pc ∨ MEM ms.PC mc.ffi_entry_pcs
+Proof
+  rpt strip_tac
+  \\ qpat_x_assum `FST _ ≠ Error` mp_tac
+  \\ simp [Once evaluate_def, erase_mc_def, arm8_target_exact_def, arm8_target_def]
+  \\ Cases_on `ms.PC ∈ mc.prog_addresses DIFF set mc.ffi_entry_pcs` \\ fs []
+  \\ Cases_on `ms.PC = mc.halt_pc` \\ fs []
+  \\ Cases_on `ms.PC = mc.install_pc` \\ fs []
+  \\ Cases_on `find_index ms.PC mc.ffi_entry_pcs 0` \\ fs []
+  \\ imp_res_tac miscTheory.find_index_is_MEM \\ fs []
+QED
+
+Theorem uncurry3_eq[local]:
+  (∀P x. (let (a, b, c) = x in P a b c) ⇔ P (FST x) (FST (SND x)) (SND (SND x))) ∧
+  (∀P x. UNCURRY (λa. UNCURRY (P a)) x ⇔ P (FST x) (FST (SND x)) (SND (SND x)))
+Proof
+  conj_tac \\ gen_tac \\ PairCases \\ simp []
+QED
+
+Theorem real_mc_evaluate_exact_eq:
   ∀k mc B ffi ms.
-    mc.target = arm8_target ∧
     mc.mmio_info = [] ∧
+    mc.next_interfer = K I ∧
     lo55 mc ∧
-    interference_ok mc.next_interfer (arm8_target.proj mc.prog_addresses) ∧
-    interfer_sp_bits_ok mc ∧
     bits_of ms = B ∧
     (¬SND (SND B) ∨ aligned 4 ms.SP_EL0) ∧
-    (∀s. arm8_ok (erase s) ∧ bits_of s = B ∧ (¬SND (SND B) ∨ aligned 4 s.SP_EL0) ∧
-         s.PC ∈ mc.prog_addresses DIFF set mc.ffi_entry_pcs ∧
-         encoded_bytes_in_mem arm8_config s.PC s.MEM mc.prog_addresses ∧
-         arm8_ok (arm8_next (erase s)) ⇒
-         (Next (erase s)).exception = NoException ∧ aligned 4 (Next s).SP_EL0) ∧
-    (∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error) ⇒
-    let (res, ms', ffi') = evaluate mc ffi k (erase ms) in
+    (∀k i bs s. bits_of s = B ⇒
+                bits_of (mc.ffi_interfer k (i, bs, s)) = B ∧
+                (mc.ffi_interfer k (i, bs, s)).SP_EL0 = s.SP_EL0) ∧
+    (∀k bs s. bits_of s = B ⇒
+              bits_of (mc.install_interfer k (bs, s)) = B ∧
+              (mc.install_interfer k (bs, s)).SP_EL0 = s.SP_EL0) ∧
+    (∀j. FST (evaluate (erase_mc B mc) ffi j (erase ms)) ≠ Error) ⇒
+    let (res, ms', ffi') = evaluate (erase_mc B mc) ffi k (erase ms) in
     ∃rms'.
       evaluate (real_mc B mc) ffi k ms = (res, rms', ffi') ∧
       erase rms' = ms' ∧ bits_of rms' = B ∧ (¬SND (SND B) ∨ aligned 4 rms'.SP_EL0)
@@ -1103,226 +2349,176 @@ Proof
   \\ rpt gen_tac \\ disch_then (REPEAT_TCL CONJUNCTS_THEN assume_tac)
   \\ PairCases_on `B`
   \\ qpat_x_assum `¬SND (SND _) ∨ _` (assume_tac o SIMP_RULE (srw_ss()) [])
-  \\ `FST (evaluate mc ffi (SUC k) (erase ms)) ≠ Error` by fs []
+  \\ `FST (evaluate (erase_mc (B0,B1,B2) mc) ffi (SUC k) (erase ms)) ≠ Error` by fs []
   \\ once_rewrite_tac [evaluate_def]
-  \\ simp [real_mc_def, arm8_target_real_def, erase_fields, arm8_target_def]
+  \\ simp [apply_oracle_def, real_mc_next_interfer_K_I, erase_mc_next_interfer_K_I,
+           real_erase_mc_shift_install, real_erase_mc_shift_ffi, real_erase_mc_fields,
+           arm8_target_real_def, arm8_target_exact_def, arm8_target_def, erase_fields]
   \\ Cases_on `ms.PC ∈ mc.prog_addresses ∧ ¬MEM ms.PC mc.ffi_entry_pcs` \\ simp []
   >- (
     Cases_on `encoded_bytes_in_mem arm8_config ms.PC ms.MEM mc.prog_addresses`
     >- (
-      simp [apply_oracle_def]
-      \\ `arm8_ok (erase ms) ∧ arm8_ok (arm8_next (erase ms)) ∧
-          arm8_ok (mc.next_interfer 0 (arm8_next (erase ms))) ∧
-          ∀x. x ∉ mc.prog_addresses ⇒ (arm8_next (erase ms)).MEM x = ms.MEM x` by
+      `arm8_ok (erase ms) ∧
+       arm8_ok (arm8$Next (erase ms)) ∧
+       (¬B2 ∨ aligned 4 (arm8$Next (erase ms)).SP_EL0) ∧
+       (∀x. x ∉ mc.prog_addresses ⇒ (arm8$Next (erase ms)).MEM x = ms.MEM x) ∧
+       (∀j. FST (evaluate (erase_mc (B0,B1,B2) mc) ffi j (arm8$Next (erase ms))) ≠ Error)` by
         (rpt conj_tac
-         \\ qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `1` mp_tac)
-         \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def]
+         >- (qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `1` mp_tac)
+             \\ simp [Once evaluate_def, apply_oracle_def, erase_mc_next_interfer_K_I,
+                      real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields]
+             \\ IF_CASES_TAC \\ fs [])
+         >- (qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `1` mp_tac)
+             \\ simp [Once evaluate_def, apply_oracle_def, erase_mc_next_interfer_K_I,
+                      real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields]
+             \\ IF_CASES_TAC \\ fs [])
+         >- (qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `1` mp_tac)
+             \\ simp [Once evaluate_def, apply_oracle_def, erase_mc_next_interfer_K_I,
+                      real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields]
+             \\ IF_CASES_TAC \\ fs [])
+         >- (qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `1` mp_tac)
+             \\ simp [Once evaluate_def, apply_oracle_def, erase_mc_next_interfer_K_I,
+                      real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields]
+             \\ IF_CASES_TAC \\ fs [])
+         \\ gen_tac \\ qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `SUC j` mp_tac)
+         \\ simp [Once evaluate_def, apply_oracle_def, erase_mc_next_interfer_K_I,
+                  real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields]
          \\ IF_CASES_TAC \\ fs [])
-      \\ `(Next (erase ms)).exception = NoException ∧ aligned 4 (Next ms).SP_EL0` by
-           (qpat_x_assum `∀s. _ ⇒ _` (qspec_then `ms` mp_tac) \\ simp [IN_DIFF])
-      \\ `NextStateARM8 (erase ms) = SOME (Next (erase ms))` by simp [NextStateARM8_def, LET_THM]
-      \\ `arm8_next (erase ms) = Next (erase ms)` by simp [arm8_next_def]
       \\ `sp_ok ms` by fs [sp_ok_def, arm8_ok_erase, bits_of_def]
-      \\ qabbrev_tac `mc1 = mc with next_interfer := (λk'. mc.next_interfer (k' + 1))`
-      \\ qabbrev_tac `ms2 = mc.next_interfer 0 (Next (erase ms))`
-      \\ `∀j. FST (evaluate mc1 ffi j ms2) ≠ Error` by
-        (gen_tac
-         \\ qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `SUC j` mp_tac)
-         \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def,
-                  Abbr `mc1`, Abbr `ms2`, shift_seq_1]
-         \\ IF_CASES_TAC \\ fs [])
-      \\ `ms2.PC = (Next (erase ms)).PC` by (unabbrev_all_tac \\ drule interference_ok_arm8_pc \\ simp [])
-      \\ `untagged (Next (erase ms)).PC` by
-        (qspecl_then [`mc1`, `ffi`, `ms2`] mp_tac evaluate_non_error_pc_valid
-         \\ simp [Abbr `mc1`] \\ strip_tac \\ fs [lo55_def])
-      \\ `Next (erase ms) = erase (Next ms)` by (drule_all Next_erase \\ simp [])
-      \\ `bits_of (Next ms) = (B0,B1,B2)` by fs [bits_of_def, Next_frame]
-      \\ qabbrev_tac `rms2 = restore (B0,B1,B2) ms2`
-      \\ `erase rms2 = ms2` by
-           (simp [Abbr `rms2`, Abbr `ms2`, erase_restore]
-            \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-            \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-            \\ qpat_x_assum `∀k s. erase s = s ⇒ _` (qspecl_then [`0`, `erase (Next ms)`] mp_tac)
-            \\ simp [erase_idem])
-      \\ `bits_of rms2 = (B0,B1,B2)` by simp [Abbr `rms2`, bits_of_restore]
-      \\ `aligned 4 ms2.SP_EL0` by
-           (simp [Abbr `ms2`] \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-            \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-            \\ qpat_x_assum `∀k s. aligned 4 s.SP_EL0 ⇒ _` (qspecl_then [`0`, `erase (Next ms)`] mp_tac)
-            \\ simp [erase_fields])
-      \\ `aligned 4 rms2.SP_EL0` by simp [Abbr `rms2`, restore_def]
-      \\ first_x_assum (qspecl_then [`mc1`, `(B0,B1,B2)`, `ffi`, `rms2`] mp_tac)
-      \\ (impl_tac
-          >- (simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                    interfer_sp_bits_ok_shifts, ETA_THM]
-              \\ rpt conj_tac
-              >- (qpat_x_assum `lo55 mc` mp_tac \\ simp [lo55_def])
-              >- (irule interference_ok_shift \\ qpat_x_assum `interference_ok _ _` mp_tac \\ simp [arm8_target_def])
-              >- (rpt strip_tac \\ qpat_x_assum `∀s. _ ⇒ _` (qspec_then `s` mp_tac) \\ simp [IN_DIFF]))
-          \\ `∀x. x ∉ mc.prog_addresses ⇒ (Next ms).MEM x = ms.MEM x` by
-               (rpt strip_tac
-                \\ `(Next ms).MEM x = (erase (Next ms)).MEM x` by simp [erase_fields]
-                \\ pop_assum SUBST1_TAC
-                \\ qpat_x_assum `Next (erase ms) = erase (Next ms)` (fn th => SUBST1_TAC (SYM th))
-                \\ qpat_x_assum `∀x. x ∉ mc.prog_addresses ⇒ _` (qspec_then `x` mp_tac)
-                \\ simp [])
-          \\ `arm8_ok (erase (Next ms)) ∧
-              arm8_ok (erase (restore (B0,B1,B2) (mc.next_interfer 0 (erase (Next ms))))) ∧
-              bits_of (restore (B0,B1,B2) (mc.next_interfer 0 (erase (Next ms)))) = (B0,B1,B2) ∧
-              aligned 4 (restore (B0,B1,B2) (mc.next_interfer 0 (erase (Next ms)))).SP_EL0` by
-                (rpt conj_tac
-                 >- (qpat_x_assum `Next (erase ms) = erase (Next ms)` (fn th => SUBST1_TAC (SYM th)) \\ fs [])
-                 >- (qpat_x_assum `Next (erase ms) = erase (Next ms)` (fn th => SUBST1_TAC (SYM th)) \\ fs [Abbr `rms2`, Abbr `ms2`])
-                 >- simp [bits_of_restore]
-                 >- (qpat_x_assum `Next (erase ms) = erase (Next ms)` (fn th => SUBST1_TAC (SYM th)) \\ fs [Abbr `rms2`, Abbr `ms2`]))
-          \\ simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                   shift_seq_1, ETA_THM, erase_fields, Abbr `rms2`, Abbr `ms2`]))
-    \\ qpat_x_assum `FST (evaluate mc ffi (SUC k) _) ≠ Error` mp_tac
-    \\ simp [Once evaluate_def, arm8_target_def, erase_fields])
+      \\ `untagged (arm8$Next (erase ms)).PC` by
+           (qspecl_then [`mc`, `(B0,B1,B2)`, `ffi`, `arm8$Next (erase ms)`] mp_tac
+              evaluate_exact_non_error_pc_valid
+            \\ simp [] \\ strip_tac \\ fs [lo55_def])
+      \\ `arm8$Next (erase ms) = erase (arm8$Next ms)` by (drule_all Next_erase \\ simp [])
+      \\ `bits_of (arm8$Next ms) = (B0,B1,B2)` by fs [bits_of_def, Next_frame]
+      \\ `¬B2 ∨ aligned 4 (arm8$Next ms).SP_EL0` by
+           (`(arm8$Next ms).SP_EL0 = (erase (arm8$Next ms)).SP_EL0` by simp [erase_fields] \\ fs [])
+      \\ `∀x. x ∉ mc.prog_addresses ⇒ (arm8$Next ms).MEM x = ms.MEM x` by
+           (rpt strip_tac
+            \\ `(arm8$Next ms).MEM x = (erase (arm8$Next ms)).MEM x` by simp [erase_fields]
+            \\ pop_assum SUBST1_TAC
+            \\ qpat_x_assum `Next (erase ms) = erase (Next ms)` (fn th => SUBST1_TAC (SYM th))
+            \\ simp [])
+      \\ `arm8_ok (erase (arm8$Next ms))` by
+           (qpat_x_assum `Next (erase ms) = erase (Next ms)` (fn th => SUBST1_TAC (SYM th)) \\ simp [])
+      \\ first_x_assum (qspecl_then [`mc`, `(B0,B1,B2)`, `ffi`, `arm8$Next ms`] mp_tac)
+      \\ impl_tac >- gvs []
+      \\ simp [uncurry3_eq] \\ gvs [])
+    \\ qpat_x_assum `FST (evaluate _ _ (SUC k) _) ≠ Error` mp_tac
+    \\ simp [Once evaluate_def, real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields])
   \\ Cases_on `ms.PC = mc.halt_pc` \\ simp [erase_fields]
   \\ Cases_on `ms.PC = mc.install_pc` \\ simp []
   >- (
-    qmatch_goalsub_abbrev_tac `read_ffi_bytearray rmc_tmp`
-    \\ `read_ffi_bytearray rmc_tmp mc.ptr_reg mc.len_reg ms =
-        read_ffi_bytearray mc mc.ptr_reg mc.len_reg (erase ms)` by
-         simp [Abbr `rmc_tmp`, read_ffi_bytearray_def, erase_fields, arm8_target_def]
-    \\ Cases_on `read_ffi_bytearray mc mc.ptr_reg mc.len_reg (erase ms)`
-    >- (qpat_x_assum `FST (evaluate mc ffi (SUC k) _) ≠ Error` mp_tac
+    `read_ffi_bytearray (real_mc (B0,B1,B2) mc) mc.ptr_reg mc.len_reg ms =
+     read_ffi_bytearray (erase_mc (B0,B1,B2) mc) mc.ptr_reg mc.len_reg (erase ms)` by
+      simp [read_ffi_bytearray_def, real_erase_mc_fields, arm8_target_real_def,
+            arm8_target_exact_def, arm8_target_def, erase_fields]
+    \\ Cases_on `read_ffi_bytearray (erase_mc (B0,B1,B2) mc) mc.ptr_reg mc.len_reg (erase ms)`
+    >- (qpat_x_assum `FST (evaluate _ _ (SUC k) _) ≠ Error` mp_tac
         \\ qpat_x_assum `¬(_ ∧ _)` mp_tac \\ qpat_x_assum `ms.PC ≠ mc.halt_pc` mp_tac
-        \\ simp [Once evaluate_def, arm8_target_def, erase_fields] \\ rw [])
-    \\ simp [apply_oracle_def]
-    \\ qabbrev_tac `mc1 = mc with install_interfer := (λk'. mc.install_interfer (k' + 1))`
-    \\ qabbrev_tac `ms1 = mc.install_interfer 0 (x, erase ms)`
-    \\ qabbrev_tac `rms1 = restore (B0,B1,B2) ms1`
-    \\ `∀j. FST (evaluate mc1 ffi j ms1) ≠ Error` by
-      (gen_tac \\ qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `SUC j` mp_tac)
-       \\ qpat_x_assum `¬(_ ∧ _)` mp_tac \\ qpat_x_assum `ms.PC ≠ mc.halt_pc` mp_tac
-       \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def,
-                Abbr `mc1`, Abbr `ms1`, shift_seq_1] \\ rw [])
-    \\ `erase rms1 = ms1` by
-      (simp [Abbr `rms1`, Abbr `ms1`, erase_restore]
-       \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-       \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-       \\ qpat_x_assum `∀k bs s. erase s = s ⇒ _` (qspecl_then [`0`, `x`, `erase ms`] mp_tac)
-       \\ simp [erase_idem])
-    \\ `bits_of rms1 = (B0,B1,B2)` by simp [Abbr `rms1`, bits_of_restore]
-    \\ `¬B2 ∨ aligned 4 rms1.SP_EL0` by
-      (Cases_on `B2` \\ simp [Abbr `rms1`, restore_def, Abbr `ms1`]
-       \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-       \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-       \\ qpat_x_assum `∀k bs s. aligned 4 s.SP_EL0 ⇒ _` irule \\ fs [erase_fields])
+        \\ simp [Once evaluate_def, real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields]
+        \\ rw [])
+    \\ simp []
+    \\ `restore (B0,B1,B2) (erase ms) = ms` by (irule restore_erase \\ simp [])
+    \\ qabbrev_tac `mc1 = mc with install_interfer := shift_seq 1 mc.install_interfer`
+    \\ qabbrev_tac `rms1 = mc.install_interfer 0 (x, ms)`
+    \\ `bits_of rms1 = (B0,B1,B2) ∧ rms1.SP_EL0 = ms.SP_EL0` by (simp [Abbr `rms1`] \\ metis_tac [])
+    \\ `∀j. FST (evaluate (erase_mc (B0,B1,B2) mc1) ffi j (erase rms1)) ≠ Error` by
+         (gen_tac \\ qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `SUC j` mp_tac)
+          \\ qpat_x_assum `¬(_ ∧ _)` mp_tac \\ qpat_x_assum `ms.PC ≠ mc.halt_pc` mp_tac
+          \\ simp [Once evaluate_def, apply_oracle_def, real_erase_mc_shift_install,
+                   real_erase_mc_fields, arm8_target_exact_def, arm8_target_def,
+                   erase_fields, Abbr `mc1`, Abbr `rms1`]
+          \\ rw [])
     \\ first_x_assum (qspecl_then [`mc1`, `(B0,B1,B2)`, `ffi`, `rms1`] mp_tac)
-    \\ (impl_tac
-        >- (simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                  interfer_sp_bits_ok_shifts, ETA_THM]
-            \\ rpt conj_tac
-            \\ TRY (qpat_x_assum `lo55 mc` mp_tac \\ simp [lo55_def])
-            \\ TRY (qpat_x_assum `interference_ok _ _` mp_tac \\ simp [arm8_target_def])
-            \\ TRY (rpt strip_tac \\ qpat_x_assum `∀s. _ ⇒ _` (qspec_then `s` mp_tac) \\ simp [IN_DIFF]))
-        \\ simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                 shift_seq_1, ETA_THM, Abbr `rms1`, Abbr `ms1`]))
+    \\ impl_tac >- (gvs [Abbr `mc1`, shift_seq_1, lo55_def] \\ metis_tac [])
+    \\ simp [uncurry3_eq, Abbr `rms1`] \\ gvs [])
   \\ Cases_on `find_index ms.PC mc.ffi_entry_pcs 0`
-  >- (qpat_x_assum `FST (evaluate mc ffi (SUC k) _) ≠ Error` mp_tac
-      \\ simp [Once evaluate_def, arm8_target_def, erase_fields] \\ rw [])
+  >- (qpat_x_assum `FST (evaluate _ _ (SUC k) _) ≠ Error` mp_tac
+      \\ simp [Once evaluate_def, real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields]
+      \\ rw [])
   \\ simp []
   \\ Cases_on `EL x mc.ffi_names` \\ simp []
   >- (
     rename1 `EL x mc.ffi_names = ExtCall fnm`
-    \\ qmatch_goalsub_abbrev_tac `read_ffi_bytearrays rmc_tmp`
-    \\ `read_ffi_bytearrays rmc_tmp ms = read_ffi_bytearrays mc (erase ms)` by
-         simp [Abbr `rmc_tmp`, read_ffi_bytearrays_def, read_ffi_bytearray_def,
-               erase_fields, arm8_target_def]
-    \\ Cases_on `read_ffi_bytearrays mc (erase ms)`
+    \\ `read_ffi_bytearrays (real_mc (B0,B1,B2) mc) ms =
+        read_ffi_bytearrays (erase_mc (B0,B1,B2) mc) (erase ms)` by
+         simp [read_ffi_bytearrays_def, read_ffi_bytearray_def, real_erase_mc_fields,
+               arm8_target_real_def, arm8_target_exact_def, arm8_target_def, erase_fields]
+    \\ Cases_on `read_ffi_bytearrays (erase_mc (B0,B1,B2) mc) (erase ms)`
     \\ Cases_on `q` \\ Cases_on `r`
-    >- (qpat_x_assum `FST (evaluate mc ffi (SUC k) _) ≠ Error` mp_tac
-        \\ simp [Once evaluate_def, arm8_target_def, erase_fields] \\ rw [])
-    >- (qpat_x_assum `FST (evaluate mc ffi (SUC k) _) ≠ Error` mp_tac
-        \\ simp [Once evaluate_def, arm8_target_def, erase_fields] \\ rw [])
-    >- (qpat_x_assum `FST (evaluate mc ffi (SUC k) _) ≠ Error` mp_tac
-        \\ simp [Once evaluate_def, arm8_target_def, erase_fields] \\ rw [])
+    >- (qpat_x_assum `FST (evaluate _ _ (SUC k) _) ≠ Error` mp_tac
+        \\ simp [Once evaluate_def, real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields] \\ rw [])
+    >- (qpat_x_assum `FST (evaluate _ _ (SUC k) _) ≠ Error` mp_tac
+        \\ simp [Once evaluate_def, real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields] \\ rw [])
+    >- (qpat_x_assum `FST (evaluate _ _ (SUC k) _) ≠ Error` mp_tac
+        \\ simp [Once evaluate_def, real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields] \\ rw [])
     \\ simp []
     \\ Cases_on `call_FFI ffi (ExtCall fnm) x' x''` \\ simp []
     \\ rename1 `call_FFI ffi (ExtCall fnm) x' x'' = FFI_return ffi1 new_bs`
-    \\ simp [apply_oracle_def]
-    \\ qabbrev_tac `mc1 = mc with ffi_interfer := (λk'. mc.ffi_interfer (k' + 1))`
-    \\ qabbrev_tac `ms1 = mc.ffi_interfer 0 (x, new_bs, erase ms)`
-    \\ qabbrev_tac `rms1 = restore (B0,B1,B2) ms1`
-    \\ `∀j. FST (evaluate mc1 ffi1 j ms1) ≠ Error` by
-      (gen_tac \\ qpat_x_assum `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` (qspec_then `SUC j` mp_tac)
-       \\ simp [Once evaluate_def, arm8_target_def, erase_fields, apply_oracle_def,
-                Abbr `mc1`, Abbr `ms1`, shift_seq_1] \\ rw [])
-    \\ `erase rms1 = ms1` by
-      (simp [Abbr `rms1`, Abbr `ms1`, erase_restore]
-       \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-       \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-       \\ qpat_x_assum `∀k i bs s. erase s = s ⇒ _` (qspecl_then [`0`, `x`, `new_bs`, `erase ms`] mp_tac)
-       \\ simp [erase_idem])
-    \\ `bits_of rms1 = (B0,B1,B2)` by simp [Abbr `rms1`, bits_of_restore]
-    \\ `¬B2 ∨ aligned 4 rms1.SP_EL0` by
-      (Cases_on `B2` \\ simp [Abbr `rms1`, restore_def, Abbr `ms1`]
-       \\ qpat_x_assum `interfer_sp_bits_ok mc` mp_tac
-       \\ simp [interfer_sp_bits_ok_def] \\ strip_tac
-       \\ qpat_x_assum `∀k i bs s. aligned 4 s.SP_EL0 ⇒ _` irule \\ fs [erase_fields])
+    \\ `restore (B0,B1,B2) (erase ms) = ms` by (irule restore_erase \\ simp [])
+    \\ qabbrev_tac `mc1 = mc with ffi_interfer := shift_seq 1 mc.ffi_interfer`
+    \\ qabbrev_tac `rms1 = mc.ffi_interfer 0 (x, new_bs, ms)`
+    \\ `bits_of rms1 = (B0,B1,B2) ∧ rms1.SP_EL0 = ms.SP_EL0` by (simp [Abbr `rms1`] \\ metis_tac [])
+    \\ `∀j. FST (evaluate (erase_mc (B0,B1,B2) mc1) ffi1 j (erase rms1)) ≠ Error` by
+         (gen_tac \\ qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `SUC j` mp_tac)
+          \\ simp [Once evaluate_def, apply_oracle_def, real_erase_mc_shift_ffi,
+                   real_erase_mc_fields, arm8_target_exact_def, arm8_target_def,
+                   erase_fields, Abbr `mc1`, Abbr `rms1`]
+          \\ rw [])
     \\ first_x_assum (qspecl_then [`mc1`, `(B0,B1,B2)`, `ffi1`, `rms1`] mp_tac)
-    \\ (impl_tac
-        >- (simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                  interfer_sp_bits_ok_shifts, ETA_THM]
-            \\ rpt conj_tac
-            \\ TRY (qpat_x_assum `lo55 mc` mp_tac \\ simp [lo55_def])
-            \\ TRY (qpat_x_assum `interference_ok _ _` mp_tac \\ simp [arm8_target_def])
-            \\ TRY (rpt strip_tac \\ qpat_x_assum `∀s. _ ⇒ _` (qspec_then `s` mp_tac) \\ simp [IN_DIFF]))
-        \\ simp [Abbr `mc1`, real_mc_def, arm8_target_real_def, arm8_target_def,
-                 shift_seq_1, ETA_THM, Abbr `rms1`, Abbr `ms1`]))
-  \\ qpat_x_assum `FST (evaluate mc ffi (SUC k) _) ≠ Error` mp_tac
-  \\ simp [Once evaluate_def, arm8_target_def, erase_fields] \\ rw []
+    \\ impl_tac >- (gvs [Abbr `mc1`, shift_seq_1, lo55_def] \\ metis_tac [])
+    \\ simp [uncurry3_eq, Abbr `rms1`] \\ gvs [])
+  \\ qpat_x_assum `FST (evaluate _ _ (SUC k) _) ≠ Error` mp_tac
+  \\ simp [Once evaluate_def, real_erase_mc_fields, arm8_target_exact_def, arm8_target_def, erase_fields] \\ rw []
 QED
 
-Theorem machine_sem_real_eq:
+Theorem machine_sem_real_eq_exact:
   ∀mc B ffi ms.
-    mc.target = arm8_target ∧
     mc.mmio_info = [] ∧
+    mc.next_interfer = K I ∧
     lo55 mc ∧
-    interference_ok mc.next_interfer (arm8_target.proj mc.prog_addresses) ∧
-    interfer_sp_bits_ok mc ∧
     bits_of ms = B ∧
     (¬SND (SND B) ∨ aligned 4 ms.SP_EL0) ∧
-    (∀s. arm8_ok (erase s) ∧ bits_of s = B ∧ (¬SND (SND B) ∨ aligned 4 s.SP_EL0) ∧
-         s.PC ∈ mc.prog_addresses DIFF set mc.ffi_entry_pcs ∧
-         encoded_bytes_in_mem arm8_config s.PC s.MEM mc.prog_addresses ∧
-         arm8_ok (arm8_next (erase s)) ⇒
-         (Next (erase s)).exception = NoException ∧ aligned 4 (Next s).SP_EL0) ∧
-    ¬machine_sem mc ffi (erase ms) Fail ⇒
-    machine_sem (real_mc B mc) ffi ms = machine_sem mc ffi (erase ms)
+    (∀k i bs s. bits_of s = B ⇒
+                bits_of (mc.ffi_interfer k (i, bs, s)) = B ∧
+                (mc.ffi_interfer k (i, bs, s)).SP_EL0 = s.SP_EL0) ∧
+    (∀k bs s. bits_of s = B ⇒
+              bits_of (mc.install_interfer k (bs, s)) = B ∧
+              (mc.install_interfer k (bs, s)).SP_EL0 = s.SP_EL0) ∧
+    ¬machine_sem (erase_mc B mc) ffi (erase ms) Fail ⇒
+    machine_sem (real_mc B mc) ffi ms = machine_sem (erase_mc B mc) ffi (erase ms)
 Proof
   rpt gen_tac \\ disch_then (REPEAT_TCL CONJUNCTS_THEN assume_tac)
-  \\ `∀j. FST (evaluate mc ffi j (erase ms)) ≠ Error` by
+  \\ `∀j. FST (evaluate (erase_mc B mc) ffi j (erase ms)) ≠ Error` by
        (qpat_x_assum `¬machine_sem _ _ _ _` mp_tac \\ simp [machine_sem_def])
   \\ `∀k. ∃rms'.
         evaluate (real_mc B mc) ffi k ms =
-          (FST (evaluate mc ffi k (erase ms)), rms', SND (SND (evaluate mc ffi k (erase ms))))` by
+          (FST (evaluate (erase_mc B mc) ffi k (erase ms)), rms',
+           SND (SND (evaluate (erase_mc B mc) ffi k (erase ms))))` by
        (gen_tac
-        \\ qspecl_then [`k`, `mc`, `B`, `ffi`, `ms`] mp_tac real_mc_evaluate_eq
+        \\ qspecl_then [`k`, `mc`, `B`, `ffi`, `ms`] mp_tac real_mc_evaluate_exact_eq
         \\ impl_tac >- (rpt conj_tac \\ first_assum ACCEPT_TAC)
-        \\ Cases_on `evaluate mc ffi k (erase ms)` \\ Cases_on `r`
+        \\ Cases_on `evaluate (erase_mc B mc) ffi k (erase ms)` \\ Cases_on `r`
         \\ simp [] \\ disch_then strip_assume_tac
         \\ qexists_tac `rms'` \\ simp [])
   \\ simp [FUN_EQ_THM] \\ gen_tac
   \\ Cases_on `x` \\ simp [machine_sem_def]
   >- (
     `∀k. (∃ms' st'. evaluate (real_mc B mc) ffi k ms = (TimeOut, ms', st')) ⇔
-         (∃ms' st'. evaluate mc ffi k (erase ms) = (TimeOut, ms', st'))` by
+         (∃ms' st'. evaluate (erase_mc B mc) ffi k (erase ms) = (TimeOut, ms', st'))` by
       (gen_tac \\ qpat_x_assum `∀k. ∃rms'. _` (qspec_then `k` strip_assume_tac)
-       \\ Cases_on `evaluate mc ffi k (erase ms)` \\ Cases_on `r` \\ fs []
+       \\ Cases_on `evaluate (erase_mc B mc) ffi k (erase ms)` \\ Cases_on `r` \\ fs []
        \\ eq_tac \\ disch_then strip_assume_tac \\ fs [])
     \\ `∀k. (SND (SND (evaluate (real_mc B mc) ffi k ms))).io_events =
-            (SND (SND (evaluate mc ffi k (erase ms)))).io_events` by
+            (SND (SND (evaluate (erase_mc B mc) ffi k (erase ms)))).io_events` by
       (gen_tac \\ qpat_x_assum `∀k. ∃rms'. _` (qspec_then `k` strip_assume_tac) \\ simp [])
     \\ simp [])
   >- (
     eq_tac \\ disch_then strip_assume_tac
     >- (
       qpat_x_assum `∀k. ∃rms'. _` (qspec_then `k` strip_assume_tac)
-      \\ Cases_on `evaluate mc ffi k (erase ms)` \\ Cases_on `r`
+      \\ Cases_on `evaluate (erase_mc B mc) ffi k (erase ms)` \\ Cases_on `r`
       \\ qpat_x_assum `evaluate (real_mc _ _) _ _ _ = (Halt _, _, _)` mp_tac
       \\ simp [] \\ strip_tac
       \\ qexists_tac `k` \\ qexists_tac `q'` \\ qexists_tac `r'` \\ simp [])
@@ -1333,6 +2529,6 @@ Proof
       \\ qexists_tac `k` \\ qexists_tac `rms'` \\ qexists_tac `st'` \\ simp []))
   \\ gen_tac
   \\ qpat_x_assum `∀k. ∃rms'. _` (qspec_then `k` strip_assume_tac)
-  \\ qpat_x_assum `∀j. FST (evaluate mc _ _ _) ≠ Error` (qspec_then `k` mp_tac)
+  \\ qpat_x_assum `∀j. FST (evaluate _ _ _ _) ≠ Error` (qspec_then `k` mp_tac)
   \\ simp []
 QED

@@ -1,44 +1,41 @@
 # Status
 
-Measured locally on branch `feat/m1-counter-e2e` (not merged to `main`):
+Measured locally on branch `feat/m1-counter-e2e` (not merged to `main`).
 
-```text
-end_to_end=true sha256=ef18c49c11319578fa6facd2f5887f5d514ce8f9c4b819ab06afdc335f3808df exec_bytes=135488 code_bytes=74396 shim_bytes=320 gap_bytes=0
-```
+Mid-milestone hardening checkpoint (Pass 2A complete; Pass 2B `forge_shimProof` compiling; Pass 2C `forge_m1Kernel` pending). Final `end_to_end=true` awaits the upgraded `Term.aconv` + pinned-spec + theorem-catalog replay of `scripts/iron_law.py`.
 
-| Item | State |
-| --- | --- |
-| Current milestone | Milestone 1 (`feat/m1-counter-e2e` — local proof, gate, smoke, and 6-vector red-team audit passed; awaiting owner review) |
-| Kernel theorem | `forge_m1Kernel.forge_m1_kernel_correct` + `forge_m1Kernel.forge_m1_nonvacuous` (0 hypotheses, `DISK_THM`-only oracle tag, 4 `bool` axioms across 434 theories, 257 `forge_*` theorems/defs clean) |
-| Clean `Holmake --qof` replay | Passed locally (`Holmake cleanAll && Holmake --qof -j 1 --no_prereqs`, exit `0`, 6/6 theories built in ~3 min) |
-| Iron Law gate (`scripts/iron_law.py`) | Passed locally (exit `0`, `end_to_end=true`, zero unverified gap bytes across 135,488B `PF_X`) |
-| Gate self-test (`scripts/tests/test_iron_law.py`) | Passed locally (`25 of 25 cases passed`, exit `0`) |
-| ARM64 black-box smoke (`scripts/smoke_m1.py`) | Passed locally in Linux/ARM64 Docker (`ALL 6 M1 BLACK-BOX SMOKE CASES PASSED`, exit `0`) |
-| Independent `/tmp` sabotage controls | Passed locally (1-bit `.text` flip -> `HASH_MISMATCH` exit `1`; 1-bit `.text` flip + forged hash -> `CODE_BYTE_MISMATCH` exit `1`; injected `cheat` -> `CHEAT_FOUND` exit `1`) |
-| Hosted GitHub Actions CI (`.github/workflows/iron-law.yml`) | Updated for pinned `HOL4 9783a4997` + `CakeML cd9155694` + `qemu-user-static`; **not executed on GitHub Actions yet** |
-| Merge blocking | Needs branch protection + required status checks on `main` (owner action) |
+## Compiled Theories (Checkpoint #1 — from `docs/THEOREM_CATALOG.md`)
+
+| Theory | Layer | Status | Definitions | Theorems | Max `HYP` | Oracles | Direct Axioms |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- |
+| `forge_counterSpec` | Pure Spec | `verified` | 31 | 52 | 0 | `[DISK_THM]` | `[]` |
+| `forge_contractSpec` | Hardware & OS Contract | `verified` | 56 | 0 | 0 | `[DISK_THM]` | `[]` |
+| `forge_counterProg` | Zero-Basis CakeML | `verified` | 8 | 26 | 0 | `[DISK_THM]` | `[]` |
+| `forge_counterCompile` | Verified Compilation | `verified` | 6 | 4 | 0 | `[DISK_THM]` | `[]` |
+| `forge_arm8Erasure` | ARMv8 Erasure & No-SVC0 | `verified` | 4 | 51 | 0 | `[DISK_THM]` | `[]` |
+| `forge_shimProof` | Boot & Syscall Shim | `pending` | — | — | — | — | — |
+| `forge_m1Kernel` | Unified End-to-End | `pending` | — | — | — | — | — |
+
+Global kernel summary across the 5 compiled `forge_*` theories (336 transitive theories): `105` definitions, `133` theorems (`238` verified items), `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `DIRECT_AXIOMS=[]`, `AXIOMS=4` (`bool.BOOL_CASES_AX`, `bool.ETA_AX`, `bool.INFINITY_AX`, `bool.SELECT_AX`).
 
 ## Commands run locally (actual exit codes)
 
-- `Holmake cleanAll && Holmake --qof -j 1 --no_prereqs` in `kernel/hol4`: **exit 0**
-  - `forge_arm8Erasure`: `20.8s`
-  - `forge_counterSpec`: `4.3s`
-  - `forge_counterProg`: `1m10s`
-  - `forge_counterCompile`: `27.7s`
-  - `forge_shimProof`: `48.7s`
-  - `forge_m1Kernel`: `16.3s`
-- `python3 scripts/iron_law.py`: **exit 0** (`end_to_end=true sha256=ef18c49c11319578fa6facd2f5887f5d514ce8f9c4b819ab06afdc335f3808df exec_bytes=135488 code_bytes=74396 shim_bytes=320 gap_bytes=0`)
-- `python3 scripts/tests/test_iron_law.py`: **exit 0** (`25 of 25 cases passed`)
-- `python3 scripts/smoke_m1.py --docker-image forge-arm64-tools:bookworm kernel/build/forge-kernel`: **exit 0** (`6/6` passed)
-- `readelf -h -l -d -sW kernel/build/forge-kernel` (in `forge-arm64-tools:bookworm`): **exit 0** (`ET_EXEC`, `AArch64`, `e_entry=0x421000`, 2 `PT_LOAD` segments `R E` and `RW`, no dynamic section)
-- Raw `hol` kernel inspection on `forge_m1KernelTheory`: **exit 0** (`HYP_COUNT: 0`, `ORACLES: [DISK_THM]`, `BAD_FORGE_ITEMS: 0`, 4 `bool` axioms)
+- `Holmake --qof -j 1 --no_prereqs forge_counterProgTheory.uo forge_counterCompileTheory.uo` in `kernel/hol4`: **exit 0**
+- `Holmake --qof -j 1 --no_prereqs forge_arm8ErasureTheory.uo` in `kernel/hol4`: **exit 0** (`9m18s`, proved `encoded_bytes_in_mem_not_svc0`, `arm8_target_exact_ok`, `arm8_target_exact_encoder_correct`, `real_mc_evaluate_exact_eq`, and `machine_sem_real_eq_exact`)
+- `FORGE_CATALOG_CHECKPOINT=1 ... hol ... < ../../scripts/export_theorem_catalog.sml`: **exit 0** (`CATALOG_EXPORT_CHECKPOINT_OK theories=5 pending=2 defs=105 thms=133 axioms=4`)
+- `python3 scripts/tests/test_iron_law.py`: **exit 0** (`41 of 41 cases passed`)
+- `python3 scripts/tests/test_hol_audit_real.py`: **exit 0** (`7 of 7 real HOL4 Term.aconv negative controls passed`)
 
-## Commands not run yet
+## Commands not run yet on hardened Pass 2 build
 
-- Hosted GitHub Actions workflow `.github/workflows/iron-law.yml` on `ubuntu-24.04` (runs after push / PR open).
+- `Holmake --qof -j 1 --no_prereqs forge_shimProofTheory.uo` (currently building)
+- `Holmake --qof -j 1 --no_prereqs forge_m1KernelTheory.uo` (pending Pass 2C proof)
+- Full clean `Holmake cleanAll && python3 scripts/iron_law.py` (requires 100% built theories and zero `pending` in `docs/THEOREM_CATALOG.md`)
+- `python3 scripts/smoke_m1.py --docker-image forge-arm64-tools:bookworm kernel/build/forge-kernel` (re-run at final gate)
+- Hosted GitHub Actions workflow `.github/workflows/iron-law.yml` on `ubuntu-24.04` (runs after PR open)
 
 ## Explicit trust boundary (Level 1 of `docs/ULTIMATE_PROOF_ROADMAP.md`)
 
-- **Proved in HOL4:** Pure counter conservation/overflow/replay spec (`forge_counterSpec`), Zero-Basis CakeML implementation (`forge_counterProg`), in-logic ARM64 compilation (`forge_counterCompile`), real Linux EL0 processor-bit erasure lift for `TBI0`/`TBI1`/`SA0` (`forge_arm8Erasure`), 43-step ELF startup + `read(63)`/`write(64)`/`exit_group(94)` shim (`forge_shimProof`), top-level real-bits machine theorem + non-vacuity witness (`forge_m1Kernel`), and zero-gap byte equality against `kernel/build/forge-kernel` (`scripts/iron_law.py`).
-- **Remaining trusted computing base (TCB):** Linux kernel syscall implementation behind `svc #0` (modeled explicitly as `svc_read_rel`, `svc_write_rel`, `svc_exit_group_rel`), ARM64 CPU silicon, HOL4/Poly/ML proof checker, and `scripts/iron_law.py` + `scripts/hol_audit.sml` + `scripts/elf64_check.py`.
-- **Note on Silver/FPGA:** CakeML's Silver targets a separate ISA, not ARM64. The roadmap tracks hardware and microkernel TCB elimination separately in `docs/ULTIMATE_PROOF_ROADMAP.md`.
+- **Proved in HOL4 (compiled so far):** Pure counter conservation/overflow/replay spec (`forge_counterSpec`), SHA-256 pinned hardware/ELF/syscall contract (`forge_contractSpec`), Zero-Basis CakeML implementation (`forge_counterProg`), in-logic ARM64 compilation (`forge_counterCompile`), real Linux EL0 processor-bit erasure + exact `arm8$Next` encoder correctness + no-rogue-`svc #0` + unconditional `machine_sem_real_eq_exact` (`forge_arm8Erasure`).
+- **Pending in Pass 2B/2C:** Universal syscall shim proof (`forge_shimProof`) and unified `Term.aconv`-pinned whole-binary theorem + non-vacuity witness (`forge_m1Kernel`).
+- **Remaining trusted computing base (TCB):** Linux kernel syscall implementation behind `svc #0` (`svc_read_rel`, `svc_write_rel`, `svc_exit_group_rel`), ARM64 CPU silicon, HOL4/Poly/ML proof checker, and `scripts/iron_law.py` + `scripts/hol_audit.sml` + `scripts/elf64_check.py`.
