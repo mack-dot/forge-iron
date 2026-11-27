@@ -1,5 +1,15 @@
 // Zero-dependency TypeScript SDK for Forge `guardrail` 64-byte binary frame kernel.
 // Auto-generated from canonical schema by `scripts/forge_vibe.py`.
+//
+// Provides capability-separated live process clients using Node built-ins only:
+//   - `GuardrailAdmin`: owns process lifecycle + `depositAndConfigure` (`op=1`)
+//     and mints restricted `GuardrailAgent` capabilities.
+//   - `GuardrailAgent`: exposes ONLY `spend` (`op=2`), `refund` (`op=3`), and
+//     `query` (`op=4`) with hard ECMAScript `#private` encapsulation.
+
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { once } from "node:events";
+import * as path from "node:path";
 
 export const FRAME_BYTES = 64;
 
@@ -28,6 +38,12 @@ export interface ResponseFrame {
   refunds: bigint;
   lastNonce: bigint;
   lastTxId: bigint;
+}
+
+export interface SpawnOptions {
+  qemu?: string;
+  dockerImage?: string;
+  cmd?: string[];
 }
 
 const U64_MAX = 0xFFFFFFFFFFFFFFFFn;
@@ -116,3 +132,203 @@ export const refundReq = (txId: bigint, amount: bigint, agentId = 0n): RequestFr
 export const queryReq = (agentId = 0n): RequestFrame => ({
   op: OP_QUERY, agentId, arg2: 0n, amount: 0n, arg4: 0n,
 });
+
+function buildKernelArgv(binary: string, opts?: SpawnOptions): [string, string[]] {
+  if (opts?.cmd && opts.cmd.length > 0) {
+    return [opts.cmd[0], opts.cmd.slice(1)];
+  }
+  if (opts?.dockerImage) {
+    const absBin = path.resolve(binary);
+    return [
+      "docker",
+      [
+        "run",
+        "--rm",
+        "-i",
+        "-v",
+        `${path.dirname(absBin)}:/work:ro`,
+        opts.dockerImage,
+        `/work/${path.basename(absBin)}`,
+      ],
+    ];
+  }
+  if (opts?.qemu) {
+    return [opts.qemu, [binary]];
+  }
+  return [binary, []];
+}
+
+interface PendingRead {
+  resolve: (frame: Uint8Array) => void;
+  reject: (err: Error) => void;
+}
+
+class KernelPipe {
+  #child: ChildProcessWithoutNullStreams;
+  #buf: Buffer = Buffer.alloc(0);
+  #waiter: PendingRead | null = null;
+  #queue: Promise<void> = Promise.resolve();
+  #closed = false;
+  #exitPromise: Promise<number>;
+
+  constructor(program: string, args: string[]) {
+    this.#child = spawn(program, args, { stdio: ["pipe", "pipe", "pipe"] });
+    this.#exitPromise = new Promise<number>((resolve, reject) => {
+      this.#child.once("error", reject);
+      this.#child.once("close", (code, sig) => {
+        this.#closed = true;
+        if (this.#waiter) {
+          const w = this.#waiter;
+          this.#waiter = null;
+          w.reject(new Error(`kernel stdout closed prematurely (code=${code}, sig=${sig})`));
+        }
+        resolve(code ?? (sig ? 1 : 0));
+      });
+    });
+
+    this.#child.stdout.on("data", (chunk: Buffer) => {
+      this.#buf = this.#buf.length === 0 ? chunk : Buffer.concat([this.#buf, chunk]);
+      if (this.#waiter && this.#buf.length >= FRAME_BYTES) {
+        const frame = new Uint8Array(this.#buf.subarray(0, FRAME_BYTES));
+        this.#buf = this.#buf.subarray(FRAME_BYTES);
+        const w = this.#waiter;
+        this.#waiter = null;
+        w.resolve(frame);
+      }
+    });
+
+    this.#child.stdout.on("end", () => {
+      if (this.#waiter) {
+        const w = this.#waiter;
+        this.#waiter = null;
+        w.reject(new Error(`kernel stdout EOF after ${this.#buf.length} of ${FRAME_BYTES} bytes`));
+      }
+    });
+  }
+
+  #readExact64(): Promise<Uint8Array> {
+    if (this.#buf.length >= FRAME_BYTES) {
+      const frame = new Uint8Array(this.#buf.subarray(0, FRAME_BYTES));
+      this.#buf = this.#buf.subarray(FRAME_BYTES);
+      return Promise.resolve(frame);
+    }
+    if (this.#closed) {
+      return Promise.reject(new Error("guardrail kernel process is closed"));
+    }
+    return new Promise<Uint8Array>((resolve, reject) => {
+      this.#waiter = { resolve, reject };
+    });
+  }
+
+  sendFrame(req: RequestFrame): Promise<ResponseFrame> {
+    const encoded = encodeRequestFrame(req);
+    const run = async (): Promise<ResponseFrame> => {
+      if (this.#closed) {
+        throw new Error("guardrail kernel process is closed");
+      }
+      const readPromise = this.#readExact64();
+      const ok = this.#child.stdin.write(encoded);
+      if (!ok) {
+        await once(this.#child.stdin, "drain");
+      }
+      const rawResp = await readPromise;
+      return decodeResponseFrame(rawResp);
+    };
+    const next = this.#queue.then(run, run);
+    this.#queue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  async close(): Promise<number> {
+    await this.#queue;
+    if (!this.#closed) {
+      this.#child.stdin.end();
+    }
+    return this.#exitPromise;
+  }
+}
+
+const AGENT_TOKEN = Symbol("GuardrailAgentToken");
+const AGENT_ALLOWED_OPS = new Set<bigint>([OP_SPEND_REQUEST, OP_REFUND, OP_QUERY]);
+
+export class GuardrailAgent {
+  readonly agentId: bigint;
+  #send: (req: RequestFrame) => Promise<ResponseFrame>;
+
+  constructor(
+    agentId: bigint,
+    sendFn: (req: RequestFrame) => Promise<ResponseFrame>,
+    token: symbol,
+  ) {
+    if (token !== AGENT_TOKEN) {
+      throw new TypeError("GuardrailAgent must be minted via GuardrailAdmin.mintAgent()");
+    }
+    this.agentId = checkU64("agentId", agentId);
+    this.#send = sendFn;
+  }
+
+  spend(destId: bigint, amount: bigint, nonce: bigint): Promise<ResponseFrame> {
+    return this.#send(spendReq(this.agentId, destId, amount, nonce));
+  }
+
+  refund(txId: bigint, amount: bigint): Promise<ResponseFrame> {
+    return this.#send(refundReq(txId, amount, this.agentId));
+  }
+
+  query(): Promise<ResponseFrame> {
+    return this.#send(queryReq(this.agentId));
+  }
+}
+
+export class GuardrailAdmin {
+  #pipe: KernelPipe;
+
+  private constructor(pipe: KernelPipe) {
+    this.#pipe = pipe;
+  }
+
+  static spawn(binary: string, opts?: SpawnOptions): GuardrailAdmin {
+    const [program, args] = buildKernelArgv(binary, opts);
+    return new GuardrailAdmin(new KernelPipe(program, args));
+  }
+
+  depositAndConfigure(
+    deposit: bigint,
+    cap: bigint,
+    allowlistMask: bigint,
+    agentId = 0n,
+  ): Promise<ResponseFrame> {
+    return this.#pipe.sendFrame(budgetSetReq(deposit, cap, allowlistMask, agentId));
+  }
+
+  deposit_and_configure(
+    deposit: bigint,
+    cap: bigint,
+    allowlistMask: bigint,
+    agentId = 0n,
+  ): Promise<ResponseFrame> {
+    return this.depositAndConfigure(deposit, cap, allowlistMask, agentId);
+  }
+
+  query(agentId = 0n): Promise<ResponseFrame> {
+    return this.#pipe.sendFrame(queryReq(agentId));
+  }
+
+  mintAgent(agentId: bigint): GuardrailAgent {
+    const pipe = this.#pipe;
+    const restrictedSend = (req: RequestFrame): Promise<ResponseFrame> => {
+      if (!AGENT_ALLOWED_OPS.has(req.op)) {
+        return Promise.reject(new Error(`GuardrailAgent is forbidden from invoking op=${req.op}`));
+      }
+      return pipe.sendFrame(req);
+    };
+    return new GuardrailAgent(agentId, restrictedSend, AGENT_TOKEN);
+  }
+
+  close(): Promise<number> {
+    return this.#pipe.close();
+  }
+}

@@ -15,3 +15,5 @@ kernels/*/build/*.o
 kernels/*/build/cake_pp.s
 __pycache__/
 *.pyc
+target/
+sdk/*/Cargo.lock
