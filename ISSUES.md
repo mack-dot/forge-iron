@@ -14,6 +14,14 @@ This file tracks open and resolved proof, gate, CI, and architecture issues in `
 | `ISS-006` | Critical | Proof (B3) | Closed (Pass 2C) | Proved `forge_m1_kernel_correct` and `forge_m1_nonvacuous` in `kernel/hol4/forge_m1KernelScript.sml`, matching the exact `Term.aconv`-pinned expected theorems in `scripts/hol_audit.sml`. Verified via clean `Holmake cleanAll && python3 scripts/iron_law.py` (`exit 0`, `end_to_end=true`, `7` theories, `112` defs, `182` thms, `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `4` `bool` axioms). |
 | `ISS-007` | Critical | CI / Reproducibility | Open (PR pending) | Committed upstream-only `Dockerfile.toolchain` (Poly/ML 5.9.1, HOL4 `9783a4997`, CakeML `cd9155694`, zero `forge-iron` theories) and updated `.github/workflows/iron-law.yml` to run `Holmake cleanAll`, `scripts/iron_law.py`, `scripts/tests/test_hol_audit_real.py`, and `scripts/smoke_m1.py`. Remains open until hosted GitHub Actions replay passes green on the Milestone 1 PR. |
 
+## Milestone 2 Hardening (Hostile Audit v3 Remediation)
+
+| ID | Severity | Area | Status | Summary |
+| --- | --- | --- | --- | --- |
+| `ISS-011` | Critical | Gate / Auditor | Closed | Hardened `runtime/hol_audit.sml` to enforce exact `Term.aconv` LHS checks on `code_def`/`data_def`/`ffis_def`/`shim_def`/layout defs, pinned `contract_thy`/`shim_thy`, and `dest_thy_const` checks on `cv$Pair`/`cv$Num`/`cv_type$to_list`/`cv_type$to_word`/`cv$c2n` BEFORE loading the prover's final theory. Verified with 15/15 real HOL4 negative controls (`scripts/tests/test_hol_audit_real.py`). |
+| `ISS-012` | High | TCB Boundary | Closed | Moved Ring 2 `json`/TypeScript/Python SDK wrappers and `schema.json` out of `kernels/guardrail/` into `sdk/guardrail/`, updated `scripts/forge_vibe.py`, added `u64` bounds checks in `sdk.ts`, and removed stale `kernel/` directory. |
+| `ISS-013` | High | Gate / ELF / Catalog | Closed | Enforced required pinned spec/contract/frame64 entries in `runtime/iron_law.py`, required `frame_bytes` and `rx_tmp + frame_bytes <= forge_heap` in `runtime/elf64_check.py`, removed `extra_rt` pollution from `runtime/export_theorem_catalog.sml` (M1 catalog now exact 7 theories), and upgraded `scripts/smoke_m2.py` to 1-byte chunks + real Linux `-EPIPE`. Verified with 53/53 cases in `scripts/tests/test_iron_law.py` and 6/6 suites in `scripts/smoke_m2.py`. |
+
 ## Repository & Future Milestone Issues
 
 | ID | Severity | Area | Status | Summary |

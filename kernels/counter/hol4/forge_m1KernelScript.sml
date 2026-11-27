@@ -3,7 +3,7 @@
 
   Composes:
     1. Pure counter spec & conservation invariants (forge_counterSpec, SHA-256 pinned)
-    2. Hardware/ELF/Linux svc #0 contract (forge_contractSpec, SHA-256 pinned)
+    2. Frozen 256 KB slot hardware/ELF/Linux svc #0 contract (forge_runtimeSpec, SHA-256 pinned)
     3. Zero-Basis CakeML program & CF total correctness (forge_counterProg)
     4. In-logic ARM64 CakeML backend compilation (forge_counterCompile)
     5. Exact arm8$Next encoder correctness, no-rogue-svc #0, and unconditional
@@ -16,7 +16,7 @@
 *)
 Theory forge_m1Kernel
 Ancestors
-  forge_counterSpec forge_contractSpec forge_counterProg forge_counterCompile
+  forge_counterSpec forge_runtimeSpec forge_counterProg forge_counterCompile
   forge_arm8Erasure forge_shimProof
   arm8_target arm8_configProof lab_to_targetProof backendProof ml_prog
   targetProps semanticsProps alignment set_sep byte
@@ -89,15 +89,32 @@ QED
 Theorem forge_ffis_eval =
   forge_counterCompileTheory.ffis_def |> CONV_RULE (RAND_CONV EVAL);
 
+Theorem m1_slot_params[local]:
+  LENGTH code = 74396 ∧ LENGTH data = 484 ∧
+  slot_cb_begin (LENGTH code) = 0x0041234Cw ∧
+  slot_cb_end (LENGTH code) = 0x00420000w ∧
+  slot_cbspace (LENGTH code) = 56500 ∧
+  slot_bm_buf_end (LENGTH data) = 0x00460F38w ∧
+  slot_layout_ok 0x0041234Cw 0x00420000w 0x00460F38w ∧
+  LENGTH forge_shim16_words = 80
+Proof
+  mp_tac counter_compiled \\ strip_tac
+  \\ simp [slot_cb_begin_def, slot_cb_end_def, align_up_64k_def, slot_cbspace_def,
+           slot_bm_buf_end_def, slot_layout_ok_def, FORGE_CAKE_MAIN_def,
+           FORGE_SLOT_END_def, FORGE_CAKE_BITMAPS_def, FORGE_DATA_SLOT_END_def,
+           forge_shim16_words_def]
+  \\ EVAL_TAC
+QED
+
 Theorem forge_ffi_names_eq:
   ∀ffi_if inst_if.
-    info.lab_conf.ffi_names = SOME (forge_mc_with ffi_if inst_if).ffi_names
+    info.lab_conf.ffi_names = SOME (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if).ffi_names
 Proof
   rpt gen_tac
   \\ mp_tac counter_compiled \\ strip_tac
   \\ drule (REWRITE_RULE [GSYM AND_IMP_INTRO] compile_imp_ffi_names)
   \\ disch_then (qspec_then `ffis` mp_tac)
-  \\ simp [forge_mc_with_def, backendTheory.set_oracle_def, arm8_configTheory.arm8_backend_config_def]
+  \\ simp [forge_mc_slot_def, backendTheory.set_oracle_def, arm8_configTheory.arm8_backend_config_def]
   \\ `ffinames_to_string_list (the [] info.lab_conf.ffi_names) = [«send16»; «recv16»]` by
        metis_tac [forge_ffis_eval]
   \\ simp []
@@ -462,59 +479,59 @@ QED
 (* ---- 3. Exact Target Machine Config, Installation & Compilation Lift ---- *)
 
 Theorem erase_mc_conf_ok[local]:
-  ∀B ffi_if inst_if. mc_conf_ok (erase_mc B (forge_mc_with ffi_if inst_if))
+  ∀B ffi_if inst_if. mc_conf_ok (erase_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if))
 Proof
   rpt gen_tac \\ PairCases_on `B`
-  \\ `mc_conf_ok (forge_mc_with ffi_if inst_if)` by (
+  \\ `mc_conf_ok (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if)` by (
        irule arm8_configProofTheory.arm8_machine_config_ok
-       \\ simp [arm8_configProofTheory.is_arm8_machine_config_def, forge_mc_with_def])
+       \\ simp [arm8_configProofTheory.is_arm8_machine_config_def, forge_mc_slot_def])
   \\ pop_assum mp_tac
-  \\ simp [lab_to_targetProofTheory.mc_conf_ok_def, erase_mc_def, forge_mc_with_def,
+  \\ simp [lab_to_targetProofTheory.mc_conf_ok_def, erase_mc_def, forge_mc_slot_def,
            arm8_target_exact_encoder_correct]
   \\ simp [arm8_target_exact_def]
 QED
 
 Theorem erase_mc_init_ok[local]:
   ∀B ffi_if inst_if.
-    mc_init_ok arm8_config arm8_backend_config (erase_mc B (forge_mc_with ffi_if inst_if))
+    mc_init_ok arm8_config arm8_backend_config (erase_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if))
 Proof
   rpt gen_tac \\ PairCases_on `B`
-  \\ `mc_init_ok arm8_config arm8_backend_config (forge_mc_with ffi_if inst_if)` by (
+  \\ `mc_init_ok arm8_config arm8_backend_config (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if)` by (
        irule arm8_configProofTheory.arm8_init_ok
-       \\ simp [arm8_configProofTheory.is_arm8_machine_config_def, forge_mc_with_def])
+       \\ simp [arm8_configProofTheory.is_arm8_machine_config_def, forge_mc_slot_def])
   \\ pop_assum mp_tac
-  \\ simp [backendProofTheory.mc_init_ok_def, erase_mc_def, forge_mc_with_def,
+  \\ simp [backendProofTheory.mc_init_ok_def, erase_mc_def, forge_mc_slot_def,
            arm8_target_exact_def]
 QED
 
 Theorem forge_installed_exact:
   ∀ms0 ffi_if inst_if.
-    forge_elf_loaded code data ms0 ∧
-    real_interfer_ok (bits_of ms0) ffi_if inst_if ⇒
+    forge_slot_loaded forge_shim16_words code data ms0 ∧
+    real_interfer_ok_slot 0x00420000w 0x00460F38w 56500 [ExtCall «send16»; ExtCall «recv16»] (bits_of ms0) ffi_if inst_if ⇒
     let ms1 = FUNPOW arm8$Next 43 ms0 in
-    let emc = erase_mc (bits_of ms0) (forge_mc_with ffi_if inst_if) in
+    let emc = erase_mc (bits_of ms0) (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if) in
       det_run 43 ms0 ms1 ∧
       ms1.PC = FORGE_CAKE_MAIN ∧
       bits_of ms1 = bits_of ms0 ∧
       ms1.SP_EL0 = ms0.SP_EL0 ∧
       sp_ok ms1 ∧
       arm8_ok (erase ms1) ∧
-      shim_loaded ms1.MEM ∧
-      installed code FORGE_CBSPACE data 0 info.lab_conf.ffi_names
+      shim_loaded_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w ms1.MEM ∧
+      installed code 56500 data 0 info.lab_conf.ffi_names
         (1, 3) emc [] (erase ms1)
 Proof
   rpt strip_tac
-  \\ fs [forge_elf_loaded_def]
+  \\ fs [forge_slot_loaded_def, LET_THM, m1_slot_params]
   \\ mp_tac counter_compiled \\ strip_tac
-  \\ qspec_then `ms0` mp_tac startup_to_cake_main \\ simp [LET_THM] \\ strip_tac
+  \\ qspecl_then [`forge_shim16_words`, `0x0041234Cw`, `0x00420000w`, `0x00460F38w`, `ms0`] mp_tac startup_to_cake_main_slot \\ simp [shim16_common_words_ok, m1_slot_params] \\ simp [LET_THM] \\ strip_tac
   \\ qabbrev_tac `ms1 = FUNPOW arm8$Next 43 ms0`
   \\ qabbrev_tac `B = bits_of ms0`
-  \\ qabbrev_tac `emc = erase_mc B (forge_mc_with ffi_if inst_if)`
+  \\ qabbrev_tac `emc = erase_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if)`
   \\ simp [targetSemTheory.installed_def]
   \\ qexists_tac `<| regs := λr. ms1.REG (n2w r);
                      fp_regs := K 0w;
                      mem := ms1.MEM;
-                     mem_domain := forge_prog_addresses;
+                     mem_domain := forge_prog_addresses_slot 0x00420000w 0x00460F38w;
                      pc := FORGE_CAKE_MAIN;
                      lr := 30;
                      align := 2;
@@ -522,18 +539,18 @@ Proof
                      failed := F |>`
   \\ qexists_tac `λa. Word (mem_dword ms1.MEM (byte_align a))`
   \\ qexists_tac `FORGE_CAKE_BITMAPS`
-  \\ qexists_tac `forge_bitmaps_region`
+  \\ qexists_tac `forge_bitmaps_region_slot 0x00460F38w`
   \\ qexists_tac `∅`
   \\ simp [LET_THM]
   \\ `{w | FORGE_HEAP ≤₊ w ∧ w <₊ FORGE_STACKEND} = forge_heap_stack_region` by
        simp [forge_heap_stack_region_def]
   \\ pop_assum SUBST1_TAC
   \\ `read_bytearray FORGE_CAKE_MAIN (LENGTH code)
-        (λa. if a ∈ forge_prog_addresses then SOME (ms1.MEM a) else NONE) = SOME code` by (
+        (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (ms1.MEM a) else NONE) = SOME code` by (
        `read_bytearray FORGE_CAKE_MAIN (LENGTH code)
-          (λa. if a ∈ forge_prog_addresses then SOME (ms1.MEM a) else NONE) =
+          (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (ms1.MEM a) else NONE) =
         read_bytearray FORGE_CAKE_MAIN (LENGTH code)
-          (λa. if a ∈ forge_prog_addresses then SOME (ms0.MEM a) else NONE)` by (
+          (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (ms0.MEM a) else NONE)` by (
          irule read_bytearray_cong \\ rpt strip_tac \\ fs []
          \\ qmatch_goalsub_abbrev_tac `ms1.MEM ad`
          \\ `ad ∉ forge_cml_ptrs_region ∧ ad ∉ forge_heap_hdr_region` by (
@@ -544,27 +561,27 @@ Proof
               \\ decide_tac)
          \\ simp [])
        \\ simp [])
-  \\ drule real_interfer_ok_imp_erase_ok \\ strip_tac
+  \\ drule real_interfer_ok_slot_imp_erase_ok \\ strip_tac
   \\ rpt conj_tac
   >- (
     (* good_init_state *)
     simp [targetSemTheory.good_init_state_def, targetSemTheory.target_configured_def,
           targetSemTheory.code_loaded_def, asmPropsTheory.target_state_rel_def,
-          Abbr `emc`, erase_mc_def, forge_mc_with_def,
+          Abbr `emc`, erase_mc_def, forge_mc_slot_def,
           arm8_target_exact_def, arm8_targetTheory.arm8_target_def,
           arm8_targetTheory.arm8_config_def, erase_fields]
     \\ rpt conj_tac
     >- (fs [sp_ok_def, bits_of_def, Abbr `B`])
-    >- (mp_tac (Q.SPECL [`ffi_if`, `inst_if`] forge_mc_with_start_pc_ok)
-        \\ simp [targetSemTheory.start_pc_ok_def, forge_mc_with_def])
+    >- (mp_tac (Q.SPECL [`0x0041234Cw`, `0x00420000w`, `0x00460F38w`, `«send16»`, `«recv16»`, `ffi_if`, `inst_if`] forge_mc_slot_start_pc_ok) \\ simp [m1_slot_params]
+        \\ simp [targetSemTheory.start_pc_ok_def, forge_mc_slot_def])
     >- (simp [FORGE_CAKE_MAIN_def] \\ EVAL_TAC)
     >- (qpat_x_assum `interference_ok _ _` mp_tac
-        \\ simp [erase_mc_def, forge_mc_with_def, arm8_target_exact_def, arm8_targetTheory.arm8_target_def])
+        \\ simp [erase_mc_def, forge_mc_slot_def, arm8_target_exact_def, arm8_targetTheory.arm8_target_def])
     >- (qpat_x_assum `ffi_interfer_ok _ _` mp_tac
-        \\ simp [erase_mc_def, forge_mc_with_def, arm8_target_exact_def,
+        \\ simp [erase_mc_def, forge_mc_slot_def, arm8_target_exact_def,
                  arm8_targetTheory.arm8_target_def, arm8_targetTheory.arm8_config_def])
     >- (qpat_x_assum `install_interfer_ok _ _ _` mp_tac
-        \\ simp [erase_mc_def, forge_mc_with_def, arm8_target_exact_def,
+        \\ simp [erase_mc_def, forge_mc_slot_def, arm8_target_exact_def,
                  arm8_targetTheory.arm8_target_def, arm8_targetTheory.arm8_config_def])
     >- rfs []
     >- (
@@ -573,16 +590,16 @@ Proof
       \\ irule read_bytearray_imp_bytes_in_mem \\ rpt strip_tac \\ fs []
       \\ first_x_assum drule \\ strip_tac \\ simp []
       \\ `0x004000B0 + i < 18446744073709551616` by decide_tac
-      \\ fs [forge_heap_stack_region_def, forge_bitmaps_region_def,
+      \\ fs [forge_heap_stack_region_def, forge_bitmaps_region_slot_def,
              FORGE_CAKE_MAIN_def, FORGE_HEAP_def, FORGE_STACKEND_def,
-             FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def, word64_add_lo_ls]
+             FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def, word64_add_lo_ls]
       \\ decide_tac)
-    >- simp [forge_prog_addresses_def, SUBSET_DEF]
-    >- simp [forge_prog_addresses_def, SUBSET_DEF]
+    >- simp [forge_prog_addresses_slot_def, SUBSET_DEF]
+    >- simp [forge_prog_addresses_slot_def, SUBSET_DEF]
     >- (
       rpt strip_tac
-      \\ fs [forge_heap_stack_region_def, forge_bitmaps_region_def,
-             FORGE_HEAP_def, FORGE_STACKEND_def, FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def,
+      \\ fs [forge_heap_stack_region_def, forge_bitmaps_region_slot_def,
+             FORGE_HEAP_def, FORGE_STACKEND_def, FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def,
              byte_align_64]
       \\ blastLib.FULL_BBLAST_TAC)
     >- (
@@ -590,60 +607,60 @@ Proof
       \\ `byte_align (byte_align a) = byte_align a` by (simp [byte_align_64] \\ blastLib.BBLAST_TAC)
       \\ simp [GSYM mem_dword_get_byte])
     >- (
-      rpt strip_tac \\ fs [FORGE_CBSPACE_def]
+      rpt strip_tac \\ fs [FORGE_CAKE_MAIN_def]
       \\ `0x004000B0 + (n + 74396) < 18446744073709551616` by decide_tac
-      \\ fs [forge_prog_addresses_def, forge_code_region_def, forge_heap_stack_region_def,
-             forge_bitmaps_region_def, FORGE_CAKE_MAIN_def, FORGE_CB_END_def,
-             FORGE_CBSPACE_def, FORGE_HEAP_def, FORGE_STACKEND_def,
-             FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def, word64_add_lo_ls]
+      \\ fs [forge_prog_addresses_slot_def, forge_code_region_slot_def, forge_heap_stack_region_def,
+             forge_bitmaps_region_slot_def, FORGE_CAKE_MAIN_def, FORGE_CAKE_MAIN_def,
+             FORGE_CAKE_MAIN_def, FORGE_HEAP_def, FORGE_STACKEND_def,
+             FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def, word64_add_lo_ls]
       \\ decide_tac)
-    \\ simp [FORGE_CBSPACE_def, dimword_64])
+    \\ simp [FORGE_CAKE_MAIN_def, dimword_64])
   >- (simp [FORGE_HEAP_def, byte_aligned_mod8])
   >- (simp [FORGE_STACKEND_def, byte_aligned_mod8])
   >- (simp [FORGE_CAKE_BITMAPS_def, byte_aligned_mod8])
   >- (simp [FORGE_HEAP_def, FORGE_STACKEND_def] \\ EVAL_TAC)
   >- (simp [FORGE_HEAP_def, FORGE_STACKEND_def, bytes_in_word_64] \\ EVAL_TAC)
   >- (
-    simp [DISJOINT_DEF, EXTENSION, forge_heap_stack_region_def, forge_bitmaps_region_def,
-          FORGE_HEAP_def, FORGE_STACKEND_def, FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def]
+    simp [DISJOINT_DEF, EXTENSION, forge_heap_stack_region_def, forge_bitmaps_region_slot_def,
+          FORGE_HEAP_def, FORGE_STACKEND_def, FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def]
     \\ gen_tac \\ blastLib.BBLAST_TAC)
   >- (
     `byte_align FORGE_HEAP = FORGE_HEAP` by (simp [FORGE_HEAP_def, byte_align_64] \\ EVAL_TAC)
     \\ simp [])
   >- (
     `byte_align (FORGE_HEAP + bytes_in_word) = FORGE_HEAP + 8w ∧
-     FORGE_CAKE_BITMAPS + 484w * bytes_in_word = FORGE_BM_BUF_END` by
-      (simp [FORGE_HEAP_def, FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def,
+     FORGE_CAKE_BITMAPS + 484w * bytes_in_word = 0x00460F38w` by
+      (simp [FORGE_HEAP_def, FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def,
              bytes_in_word_64, byte_align_64] \\ EVAL_TAC)
     \\ simp [])
   >- (
     `byte_align (FORGE_HEAP + 2w * bytes_in_word) = FORGE_HEAP + 16w ∧
-     FORGE_CAKE_BITMAPS + 484w * bytes_in_word = FORGE_BM_BUF_END` by
-      (simp [FORGE_HEAP_def, FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def,
+     FORGE_CAKE_BITMAPS + 484w * bytes_in_word = 0x00460F38w` by
+      (simp [FORGE_HEAP_def, FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def,
              bytes_in_word_64, byte_align_64] \\ EVAL_TAC)
     \\ simp [])
   >- (
-    simp [Abbr `emc`, erase_mc_def, forge_mc_with_def, arm8_target_exact_def,
+    simp [Abbr `emc`, erase_mc_def, forge_mc_slot_def, arm8_target_exact_def,
           arm8_targetTheory.arm8_target_def, erase_fields]
     \\ `byte_align (FORGE_HEAP + 3w * bytes_in_word) = FORGE_HEAP + 24w ∧
-        FORGE_CAKE_MAIN + 0x1229Cw = FORGE_CB_BEGIN` by
-      (simp [FORGE_HEAP_def, FORGE_CAKE_MAIN_def, FORGE_CB_BEGIN_def,
+        FORGE_CAKE_MAIN + 0x1229Cw = 0x0041234Cw` by
+      (simp [FORGE_HEAP_def, FORGE_CAKE_MAIN_def, FORGE_CAKE_MAIN_def,
              bytes_in_word_64, byte_align_64] \\ EVAL_TAC)
     \\ simp [])
   >- (
-    simp [Abbr `emc`, erase_mc_def, forge_mc_with_def, arm8_target_exact_def,
+    simp [Abbr `emc`, erase_mc_def, forge_mc_slot_def, arm8_target_exact_def,
           arm8_targetTheory.arm8_target_def, erase_fields]
     \\ `byte_align (FORGE_HEAP + 4w * bytes_in_word) = FORGE_HEAP + 32w` by
          (simp [FORGE_HEAP_def, bytes_in_word_64, byte_align_64] \\ EVAL_TAC)
     \\ pop_assum SUBST1_TAC \\ simp []
-    \\ simp [FORGE_CAKE_MAIN_def, FORGE_CBSPACE_def, FORGE_CB_END_def] \\ EVAL_TAC)
+    \\ simp [FORGE_CAKE_MAIN_def, FORGE_CAKE_MAIN_def, FORGE_CAKE_MAIN_def] \\ EVAL_TAC)
   >- (
     (* word_list for bitmaps *)
     simp [word_list_exists_0, set_sepTheory.SEP_CLAUSES]
-    \\ `forge_bitmaps_region =
+    \\ `forge_bitmaps_region_slot 0x00460F38w =
           {a | FORGE_CAKE_BITMAPS ≤₊ a ∧ a <₊ FORGE_CAKE_BITMAPS + n2w (8 * LENGTH (MAP ((Word : word64 -> 64 word_loc) o n2w) data))}` by (
-         simp [forge_bitmaps_region_def, FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def]
-         \\ `0x430018w + n2w (8 * 484) = (0x430F38w:word64)` by EVAL_TAC
+         simp [forge_bitmaps_region_slot_def, FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def]
+         \\ `0x460018w + n2w (8 * 484) = (0x460F38w:word64)` by EVAL_TAC
          \\ simp [])
     \\ pop_assum SUBST1_TAC
     \\ irule word_list_slice
@@ -653,9 +670,9 @@ Proof
       \\ simp [EL_MAP]
       \\ `byte_align (FORGE_CAKE_BITMAPS + n2w (8 * i)) = FORGE_CAKE_BITMAPS + n2w (8 * i)` by (
            `byte_aligned (FORGE_CAKE_BITMAPS + n2w (8 * i))` by (
-             `0x00430018 + 8 * i < 18446744073709551616` by decide_tac
+             `0x00460018 + 8 * i < 18446744073709551616` by decide_tac
              \\ simp [FORGE_CAKE_BITMAPS_def, byte_aligned_mod8, wordsTheory.word_add_n2w, w2n_n2w_64]
-             \\ `0x00430018 + 8 * i = (548867 + i) * 8` by decide_tac
+             \\ `0x00460018 + 8 * i = (573443 + i) * 8` by decide_tac
              \\ pop_assum SUBST1_TAC \\ simp [])
            \\ fs [alignmentTheory.byte_aligned_def, alignmentTheory.aligned_def,
                   alignmentTheory.byte_align_def])
@@ -663,7 +680,7 @@ Proof
       \\ `mem_dword ms1.MEM (FORGE_CAKE_BITMAPS + n2w (8 * i)) =
           mem_dword ms0.MEM (FORGE_CAKE_BITMAPS + n2w (8 * i))` by (
            irule mem_dword_cong \\ rpt strip_tac \\ first_x_assum irule
-           \\ `0x00430018 + (8 * i + j) < 18446744073709551616` by decide_tac
+           \\ `0x00460018 + (8 * i + j) < 18446744073709551616` by decide_tac
            \\ fs [forge_cml_ptrs_region_def, forge_heap_hdr_region_def,
                   FORGE_CAKE_BITMAPS_def, FORGE_CML_HEAP_def, FORGE_HEAP_def,
                   word_add_n2w_n2w, word64_add_lo_ls]
@@ -675,19 +692,19 @@ Proof
   \\ gen_tac \\ strip_tac
   \\ `i = 2` by (
        qpat_x_assum `mmio_pcs_min_index _ = SOME i` mp_tac
-       \\ mp_tac (Q.SPECL [`ffi_if`, `inst_if`] forge_mc_with_mmio_min)
+       \\ mp_tac (Q.SPECL [`0x00420000w`, `0x00460F38w`, `«send16»`, `«recv16»`, `ffi_if`, `inst_if`] forge_mc_slot_mmio_min)
        \\ simp [Abbr `emc`, erase_mc_def])
   \\ rveq
-  \\ simp [Abbr `emc`, erase_mc_def, forge_mc_with_def, FORGE_CBSPACE_def,
+  \\ simp [Abbr `emc`, erase_mc_def, forge_mc_slot_def, FORGE_CAKE_MAIN_def,
            lab_to_targetTheory.ffi_offset_def, dimword_64]
 QED
 
 Theorem forge_compile_exact:
   ∀ms0 io ffi_if inst_if.
-    forge_elf_loaded code data ms0 ∧ io.outputs = [] ∧
-    real_interfer_ok (bits_of ms0) ffi_if inst_if ⇒
+    forge_slot_loaded forge_shim16_words code data ms0 ∧ io.outputs = [] ∧
+    real_interfer_ok_slot 0x00420000w 0x00460F38w 56500 [ExtCall «send16»; ExtCall «recv16»] (bits_of ms0) ffi_if inst_if ⇒
     let ms1 = FUNPOW arm8$Next 43 ms0 in
-    let rmc = real_mc (bits_of ms0) (forge_mc_with ffi_if inst_if) in
+    let rmc = real_mc (bits_of ms0) (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if) in
       rmc.target = arm8_target_real (bits_of ms0) ∧
       ¬machine_sem rmc (counter_ffi io) ms1 Fail ∧
       (∀j. FST (evaluate rmc (counter_ffi io) j ms1) ≠ Error) ∧
@@ -714,7 +731,7 @@ Proof
   \\ simp [LET_THM]
   \\ drule_all forge_installed_exact \\ simp [LET_THM] \\ strip_tac
   \\ qabbrev_tac `ms1 = FUNPOW arm8$Next 43 ms0`
-  \\ qabbrev_tac `mc0 = forge_mc_with ffi_if inst_if`
+  \\ qabbrev_tac `mc0 = forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if`
   \\ qabbrev_tac `emc = erase_mc (bits_of ms0) mc0`
   \\ qabbrev_tac `rmc = real_mc (bits_of ms0) mc0`
   \\ mp_tac counter_compiled \\ strip_tac
@@ -746,13 +763,13 @@ Proof
   \\ `machine_sem rmc (counter_ffi io) ms1 = machine_sem emc (counter_ffi io) (erase ms1)` by (
        fs [Abbr `rmc`, Abbr `emc`]
        \\ irule machine_sem_real_eq_exact
-       \\ simp [Abbr `mc0`, forge_mc_with_lo55]
+       \\ simp [Abbr `mc0`, MATCH_MP forge_mc_slot_lo55 (cj 7 m1_slot_params)]
        \\ rpt conj_tac
-       >- fs [real_interfer_ok_def, LET_THM, forge_mc_with_def]
-       >- fs [real_interfer_ok_def, LET_THM, forge_mc_with_def]
-       >- simp [forge_mc_with_def]
-       >- simp [forge_mc_with_def]
-       \\ fs [sp_ok_def, bits_of_def, forge_elf_loaded_def])
+       >- fs [real_interfer_ok_slot_def, LET_THM, forge_mc_slot_def]
+       >- fs [real_interfer_ok_slot_def, LET_THM, forge_mc_slot_def]
+       >- simp [forge_mc_slot_def]
+       >- simp [forge_mc_slot_def]
+       \\ fs [sp_ok_def, bits_of_def, forge_slot_loaded_def, LET_THM, m1_slot_params])
   \\ `¬machine_sem rmc (counter_ffi io) ms1 Fail` by simp []
   \\ `∀b. machine_sem rmc (counter_ffi io) ms1 b ⇒
           ∃t io_events.
@@ -795,46 +812,46 @@ QED
 
 Theorem shift_rmc_next_interfer[local]:
   ∀B ffi_if inst_if.
-    (real_mc B (forge_mc_with ffi_if inst_if) with next_interfer := shift_seq 1 (K I)) =
-    real_mc B (forge_mc_with ffi_if inst_if)
+    (real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if) with next_interfer := shift_seq 1 (K I)) =
+    real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if)
 Proof
   rpt gen_tac
-  \\ simp [real_mc_def, forge_mc_with_def, miscTheory.shift_seq_def, FUN_EQ_THM,
+  \\ simp [real_mc_def, forge_mc_slot_def, miscTheory.shift_seq_def, FUN_EQ_THM,
            targetSemTheory.machine_config_component_equality]
 QED
 
 Theorem shift_mk_real_ffi_if[local]:
-  ∀P. shift_seq 1 (mk_real_ffi_if P) = mk_real_ffi_if (λk. P (k + 1))
+  ∀P. shift_seq 1 (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P) = mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + 1))
 Proof
-  gen_tac \\ simp [FUN_EQ_THM, pairTheory.FORALL_PROD, miscTheory.shift_seq_def, mk_real_ffi_if_def]
+  gen_tac \\ simp [FUN_EQ_THM, pairTheory.FORALL_PROD, miscTheory.shift_seq_def, mk_real_ffi_if_slot_def]
 QED
 
 Theorem real_mc_shift_ffi_P[local]:
   ∀B P.
-    (real_mc B (forge_mc_with (mk_real_ffi_if P) forge_real_install_if) with
-       ffi_interfer := shift_seq 1 (mk_real_ffi_if P)) =
-    real_mc B (forge_mc_with (mk_real_ffi_if (λk. P (k + 1))) forge_real_install_if)
+    (real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P) forge_real_install_if) with
+       ffi_interfer := shift_seq 1 (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P)) =
+    real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + 1))) forge_real_install_if)
 Proof
   rpt gen_tac
-  \\ simp [real_mc_def, forge_mc_with_def, shift_mk_real_ffi_if,
+  \\ simp [real_mc_def, forge_mc_slot_def, shift_mk_real_ffi_if,
            targetSemTheory.machine_config_component_equality]
 QED
 
 Theorem mk_real_ffi_if_pc[local]:
-  ∀P k idx new_bs s. (mk_real_ffi_if P k (idx, new_bs, s)).PC = s.REG 30w
+  ∀P k idx new_bs s. (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P k (idx, new_bs, s)).PC = s.REG 30w
 Proof
-  rpt gen_tac \\ simp [mk_real_ffi_if_def]
+  rpt gen_tac \\ simp [mk_real_ffi_if_slot_def]
   \\ IF_CASES_TAC
-  >- (SELECT_ELIM_TAC \\ conj_tac >- metis_tac [] \\ simp [ffi_return_ok_def])
+  >- (SELECT_ELIM_TAC \\ conj_tac >- metis_tac [] \\ simp [ffi_return_ok_slot_def])
   \\ simp [forge_canonical_ffi_post_def]
 QED
 
 Theorem mk_real_ffi_if_select[local]:
   ∀P k idx new_bs s s_tgt.
-    (∀s'. P k idx new_bs s s' ⇔ s' = s_tgt) ∧ ffi_return_ok new_bs s s_tgt ⇒
-    mk_real_ffi_if P k (idx, new_bs, s) = s_tgt
+    (∀s'. P k idx new_bs s s' ⇔ s' = s_tgt) ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s_tgt ⇒
+    mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P k (idx, new_bs, s) = s_tgt
 Proof
-  rpt strip_tac \\ simp [mk_real_ffi_if_def]
+  rpt strip_tac \\ simp [mk_real_ffi_if_slot_def]
   \\ SELECT_ELIM_TAC \\ simp []
 QED
 
@@ -922,58 +939,58 @@ Proof
 QED
 
 Theorem forge_veneer_facts[local]:
-  FORGE_EXIT_VENEER ∉ forge_prog_addresses ∧
-  FORGE_INSTALL_VENEER ∉ forge_prog_addresses ∧
-  FORGE_FFISEND16_VENEER ∉ forge_prog_addresses ∧
-  FORGE_FFIRECV16_VENEER ∉ forge_prog_addresses ∧
+  FORGE_EXIT_VENEER ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧
+  FORGE_INSTALL_VENEER ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧
+  FORGE_FFISEND_VENEER ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧
+  FORGE_FFIRECV_VENEER ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧
   FORGE_EXIT_VENEER ≠ FORGE_INSTALL_VENEER ∧
-  FORGE_EXIT_VENEER ≠ FORGE_FFISEND16_VENEER ∧
-  FORGE_EXIT_VENEER ≠ FORGE_FFIRECV16_VENEER ∧
-  FORGE_INSTALL_VENEER ≠ FORGE_FFISEND16_VENEER ∧
-  FORGE_INSTALL_VENEER ≠ FORGE_FFIRECV16_VENEER ∧
-  FORGE_FFISEND16_VENEER ≠ FORGE_FFIRECV16_VENEER ∧
+  FORGE_EXIT_VENEER ≠ FORGE_FFISEND_VENEER ∧
+  FORGE_EXIT_VENEER ≠ FORGE_FFIRECV_VENEER ∧
+  FORGE_INSTALL_VENEER ≠ FORGE_FFISEND_VENEER ∧
+  FORGE_INSTALL_VENEER ≠ FORGE_FFIRECV_VENEER ∧
+  FORGE_FFISEND_VENEER ≠ FORGE_FFIRECV_VENEER ∧
   FORGE_INSTALL_VENEER ≠ FORGE_EXIT_VENEER ∧
-  FORGE_FFISEND16_VENEER ≠ FORGE_EXIT_VENEER ∧
-  FORGE_FFISEND16_VENEER ≠ FORGE_INSTALL_VENEER ∧
-  FORGE_FFIRECV16_VENEER ≠ FORGE_EXIT_VENEER ∧
-  FORGE_FFIRECV16_VENEER ≠ FORGE_INSTALL_VENEER ∧
-  FORGE_FFIRECV16_VENEER ≠ FORGE_FFISEND16_VENEER
+  FORGE_FFISEND_VENEER ≠ FORGE_EXIT_VENEER ∧
+  FORGE_FFISEND_VENEER ≠ FORGE_INSTALL_VENEER ∧
+  FORGE_FFIRECV_VENEER ≠ FORGE_EXIT_VENEER ∧
+  FORGE_FFIRECV_VENEER ≠ FORGE_INSTALL_VENEER ∧
+  FORGE_FFIRECV_VENEER ≠ FORGE_FFISEND_VENEER
 Proof
-  simp [forge_prog_addresses_def, forge_code_region_def, forge_bitmaps_region_def,
-        forge_heap_stack_region_def, FORGE_CAKE_MAIN_def, FORGE_CB_END_def,
-        FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def, FORGE_HEAP_def, FORGE_STACKEND_def,
+  simp [forge_prog_addresses_slot_def, forge_code_region_slot_def, forge_bitmaps_region_slot_def,
+        forge_heap_stack_region_def, FORGE_CAKE_MAIN_def, FORGE_CAKE_MAIN_def,
+        FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def, FORGE_HEAP_def, FORGE_STACKEND_def,
         FORGE_EXIT_VENEER_def, FORGE_INSTALL_VENEER_def,
-        FORGE_FFISEND16_VENEER_def, FORGE_FFIRECV16_VENEER_def] \\ EVAL_TAC
+        FORGE_FFISEND_VENEER_def, FORGE_FFIRECV_VENEER_def] \\ EVAL_TAC
 QED
 
 Theorem real_mc_eval_step_cases[local]:
   ∀B P ffi s.
-    let rmc = real_mc B (forge_mc_with (mk_real_ffi_if P) forge_real_install_if) in
-      arm8_ok (erase s) ∧ sp_ok s ∧ bits_of s = B ∧ shim_loaded s.MEM ∧
+    let rmc = real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P) forge_real_install_if) in
+      arm8_ok (erase s) ∧ sp_ok s ∧ bits_of s = B ∧ shim_loaded_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w s.MEM ∧
       ffi.oracle = counter_ffi_oracle ∧
       (∀j. FST (evaluate rmc ffi j s) ≠ Error) ⇒
-      (s.PC ∈ forge_prog_addresses ∧ s.PC ≠ FORGE_FFISEND16_VENEER ∧ s.PC ≠ FORGE_FFIRECV16_VENEER ⇒
+      (s.PC ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧ s.PC ≠ FORGE_FFISEND_VENEER ∧ s.PC ≠ FORGE_FFIRECV_VENEER ⇒
          ¬is_svc0_at s ∧
          NextStateARM8 s = SOME (arm8$Next s) ∧
          arm8_ok (erase (arm8$Next s)) ∧ sp_ok (arm8$Next s) ∧
-         bits_of (arm8$Next s) = B ∧ shim_loaded (arm8$Next s).MEM ∧
+         bits_of (arm8$Next s) = B ∧ shim_loaded_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (arm8$Next s).MEM ∧
          (∀k. evaluate rmc ffi (SUC k) s = evaluate rmc ffi k (arm8$Next s))) ∧
       (s.PC = FORGE_EXIT_VENEER ⇒
          ∀k. evaluate rmc ffi (SUC k) s =
              (if s.REG 0w = 0w then Halt Success else Halt Resource_limit_hit, s, ffi)) ∧
-      (s.PC = FORGE_FFISEND16_VENEER ∨ s.PC = FORGE_FFIRECV16_VENEER ⇒
+      (s.PC = FORGE_FFISEND_VENEER ∨ s.PC = FORGE_FFIRECV_VENEER ⇒
          ∃bytes bytes2.
            read_bytearray (s.REG 0w) (w2n (s.REG 1w))
-             (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes ∧
+             (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE) = SOME bytes ∧
            read_bytearray (s.REG 2w) (w2n (s.REG 3w))
-             (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+             (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
            aligned 2 (s.REG 30w) ∧ untagged (s.REG 30w)) ∧
-      ((s.PC ∈ forge_prog_addresses ∧ s.PC ≠ FORGE_FFISEND16_VENEER ∧ s.PC ≠ FORGE_FFIRECV16_VENEER) ∨
+      ((s.PC ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧ s.PC ≠ FORGE_FFISEND_VENEER ∧ s.PC ≠ FORGE_FFIRECV_VENEER) ∨
        s.PC = FORGE_EXIT_VENEER ∨ s.PC = FORGE_INSTALL_VENEER ∨
-       s.PC = FORGE_FFISEND16_VENEER ∨ s.PC = FORGE_FFIRECV16_VENEER)
+       s.PC = FORGE_FFISEND_VENEER ∨ s.PC = FORGE_FFIRECV_VENEER)
 Proof
   rpt gen_tac \\ simp [LET_THM]
-  \\ qabbrev_tac `rmc = real_mc B (forge_mc_with (mk_real_ffi_if P) forge_real_install_if)`
+  \\ qabbrev_tac `rmc = real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P) forge_real_install_if)`
   \\ strip_tac
   \\ strip_assume_tac forge_veneer_facts
   \\ rpt conj_tac
@@ -982,50 +999,53 @@ Proof
     \\ `s.PC ≠ FORGE_EXIT_VENEER ∧ s.PC ≠ FORGE_INSTALL_VENEER` by metis_tac []
     \\ `SND (SND B) ⇒ aligned 4 s.SP_EL0` by
          (qpat_x_assum `bits_of s = B` (SUBST1_TAC o SYM) \\ fs [sp_ok_def, bits_of_def])
-    \\ `encoded_bytes_in_mem arm8_config s.PC s.MEM forge_prog_addresses ∧
+    \\ `encoded_bytes_in_mem arm8_config s.PC s.MEM (forge_prog_addresses_slot 0x00420000w 0x00460F38w) ∧
         arm8_ok (erase (arm8$Next s)) ∧ bits_of (arm8$Next s) = B ∧
         (SND (SND B) ⇒ aligned 4 (arm8$Next s).SP_EL0) ∧
-        (∀x. x ∉ forge_prog_addresses ⇒ (arm8$Next s).MEM x = s.MEM x)` by (
+        (∀x. x ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ⇒ (arm8$Next s).MEM x = s.MEM x)` by (
          qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `1` mp_tac)
-         \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_with_def,
+         \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_slot_def,
                   arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                   targetSemTheory.apply_oracle_def]
-         \\ Cases_on `encoded_bytes_in_mem arm8_config s.PC s.MEM forge_prog_addresses` \\ simp []
+         \\ Cases_on `encoded_bytes_in_mem arm8_config s.PC s.MEM (forge_prog_addresses_slot 0x00420000w 0x00460F38w)` \\ simp []
          \\ Cases_on `((¬SND (SND B) ∨ aligned 4 s.SP_EL0) ∧ arm8_ok (erase (arm8$Next s)) ∧
                        bits_of (arm8$Next s) = B ∧ (¬SND (SND B) ∨ aligned 4 (arm8$Next s).SP_EL0)) ∧
-                      (∀x. x ∉ forge_prog_addresses ⇒ (arm8$Next s).MEM x = s.MEM x)` \\ simp []
+                      (∀x. x ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ⇒ (arm8$Next s).MEM x = s.MEM x)` \\ simp []
          \\ strip_tac \\ metis_tac [])
     \\ rpt conj_tac
-    >- (irule encoded_bytes_in_mem_not_svc0 \\ qexists_tac `forge_prog_addresses` \\ simp [])
+    >- (irule encoded_bytes_in_mem_not_svc0 \\ qexists_tac `forge_prog_addresses_slot 0x00420000w 0x00460F38w` \\ simp [])
     >- (simp [arm8_stepTheory.NextStateARM8_def] \\ fs [arm8_ok_erase])
     >- simp []
     >- (fs [sp_ok_def, arm8_ok_erase] \\ Cases_on `(arm8$Next s).SCTLR_EL1.SA0` \\ simp []
         \\ qpat_x_assum `SND (SND B) ⇒ aligned 4 (arm8$Next s).SP_EL0` irule
         \\ qpat_x_assum `bits_of (arm8$Next s) = B` (SUBST1_TAC o SYM) \\ simp [bits_of_def])
     >- simp []
-    >- (irule (iffRL shim_loaded_cong) \\ qexists_tac `s.MEM` \\ simp []
-        \\ rpt strip_tac \\ first_x_assum irule
-        \\ strip_tac \\ drule (cj 1 forge_regions_disjoint) \\ gvs [])
+    >- (mp_tac (Q.SPECL [`forge_shim16_words`, `0x0041234Cw`, `0x00420000w`, `0x00460F38w`, `(arm8$Next s).MEM`, `s.MEM`] shim_loaded_slot_cong)
+        \\ impl_tac
+        >- (conj_tac >- simp [m1_slot_params]
+            \\ rpt strip_tac \\ first_x_assum irule
+            \\ strip_tac \\ drule (cj 1 (MATCH_MP forge_regions_disjoint_slot (cj 7 m1_slot_params))) \\ gvs [])
+        \\ simp [])
     \\ gen_tac
     \\ `shift_seq 1 (K I) = (K I : num -> arm8_state -> arm8_state)` by
          simp [miscTheory.shift_seq_def, FUN_EQ_THM]
     \\ `(¬SND (SND B) ∨ aligned 4 s.SP_EL0) ∧ (¬SND (SND B) ∨ aligned 4 (arm8$Next s).SP_EL0)` by metis_tac []
-    \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_with_def,
+    \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_slot_def,
              arm8_target_real_def, arm8_targetTheory.arm8_target_def,
              targetSemTheory.apply_oracle_def])
   >- (
     strip_tac \\ gen_tac
-    \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_with_def,
+    \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_slot_def,
              arm8_target_real_def, arm8_targetTheory.arm8_target_def])
   >- (
     disch_tac
-    \\ `s.PC ∉ forge_prog_addresses ∧ s.PC ≠ FORGE_EXIT_VENEER ∧ s.PC ≠ FORGE_INSTALL_VENEER` by metis_tac []
-    \\ `find_index s.PC [FORGE_FFISEND16_VENEER; FORGE_FFIRECV16_VENEER] 0 =
-        SOME (if s.PC = FORGE_FFISEND16_VENEER then 0 else 1)` by
-         (Cases_on `s.PC = FORGE_FFISEND16_VENEER` \\ fs [miscTheory.find_index_def])
-    \\ qabbrev_tac `idx = if s.PC = FORGE_FFISEND16_VENEER then 0 else 1`
+    \\ `s.PC ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧ s.PC ≠ FORGE_EXIT_VENEER ∧ s.PC ≠ FORGE_INSTALL_VENEER` by metis_tac []
+    \\ `find_index s.PC [FORGE_FFISEND_VENEER; FORGE_FFIRECV_VENEER] 0 =
+        SOME (if s.PC = FORGE_FFISEND_VENEER then 0 else 1)` by
+         (Cases_on `s.PC = FORGE_FFISEND_VENEER` \\ fs [miscTheory.find_index_def])
+    \\ qabbrev_tac `idx = if s.PC = FORGE_FFISEND_VENEER then 0 else 1`
     \\ qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `2` mp_tac)
-    \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_with_def,
+    \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_slot_def,
              arm8_target_real_def, arm8_targetTheory.arm8_target_def,
              targetSemTheory.apply_oracle_def,
              targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def]
@@ -1033,10 +1053,10 @@ Proof
         ExtCall (if idx = 0 then «send16» else «recv16»)` by (simp [Abbr `idx`] \\ rw [])
     \\ pop_assum SUBST1_TAC
     \\ Cases_on `read_bytearray (s.REG 0w) (w2n (s.REG 1w))
-                   (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE)` \\ simp []
+                   (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE)` \\ simp []
     \\ rename1 `read_bytearray (s.REG 0w) _ _ = SOME bytes`
     \\ Cases_on `read_bytearray (s.REG 2w) (w2n (s.REG 3w))
-                   (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE)` \\ simp []
+                   (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE)` \\ simp []
     \\ rename1 `read_bytearray (s.REG 2w) _ _ = SOME bytes2`
     \\ `∃ffi1 new_bs. call_FFI ffi (ExtCall (if idx = 0 then «send16» else «recv16»)) bytes bytes2 =
                       FFI_return ffi1 new_bs` by
@@ -1044,7 +1064,7 @@ Proof
           >- (drule counter_ffi_call_send16 \\ metis_tac [])
           \\ drule counter_ffi_call_recv16 \\ metis_tac [])
     \\ pop_assum strip_assume_tac \\ simp []
-    \\ qabbrev_tac `ms1 = mk_real_ffi_if P 0 (idx, new_bs, s)`
+    \\ qabbrev_tac `ms1 = mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P 0 (idx, new_bs, s)`
     \\ `ms1.PC = s.REG 30w` by simp [Abbr `ms1`, mk_real_ffi_if_pc]
     \\ simp [Once targetSemTheory.evaluate_def, arm8_targetTheory.arm8_target_def,
              targetSemTheory.apply_oracle_def]
@@ -1052,27 +1072,27 @@ Proof
     >- (simp [FORGE_EXIT_VENEER_def, untagged_def] \\ EVAL_TAC)
     \\ (Cases_on `s.REG 30w = FORGE_INSTALL_VENEER` \\ simp [])
     >- (simp [FORGE_INSTALL_VENEER_def, untagged_def] \\ EVAL_TAC)
-    \\ (Cases_on `s.REG 30w ∈ forge_prog_addresses` \\ simp [])
+    \\ (Cases_on `s.REG 30w ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w` \\ simp [])
     >- (
-      `s.REG 30w ≠ FORGE_FFISEND16_VENEER ∧ s.REG 30w ≠ FORGE_FFIRECV16_VENEER` by metis_tac []
+      `s.REG 30w ≠ FORGE_FFISEND_VENEER ∧ s.REG 30w ≠ FORGE_FFIRECV_VENEER` by metis_tac []
       \\ simp []
-      \\ Cases_on `encoded_bytes_in_mem arm8_config (s.REG 30w) ms1.MEM forge_prog_addresses` \\ simp []
+      \\ Cases_on `encoded_bytes_in_mem arm8_config (s.REG 30w) ms1.MEM (forge_prog_addresses_slot 0x00420000w 0x00460F38w)` \\ simp []
       \\ Cases_on `arm8_ok (erase ms1)` \\ simp []
       \\ disch_tac \\ conj_tac
       >- (qpat_x_assum `arm8_ok (erase ms1)` mp_tac \\ simp [arm8_ok_erase])
-      \\ irule (cj 5 forge_regions_disjoint) \\ simp [])
-    \\ (Cases_on `s.REG 30w = FORGE_FFISEND16_VENEER` \\ simp [miscTheory.find_index_def])
-    >- (simp [FORGE_FFISEND16_VENEER_def, untagged_def] \\ EVAL_TAC)
-    \\ (Cases_on `s.REG 30w = FORGE_FFIRECV16_VENEER` \\ simp [miscTheory.find_index_def])
-    \\ simp [FORGE_FFIRECV16_VENEER_def, untagged_def] \\ EVAL_TAC)
+      \\ irule (cj 5 (MATCH_MP forge_regions_disjoint_slot (cj 7 m1_slot_params))) \\ simp [])
+    \\ (Cases_on `s.REG 30w = FORGE_FFISEND_VENEER` \\ simp [miscTheory.find_index_def])
+    >- (simp [FORGE_FFISEND_VENEER_def, untagged_def] \\ EVAL_TAC)
+    \\ (Cases_on `s.REG 30w = FORGE_FFIRECV_VENEER` \\ simp [miscTheory.find_index_def])
+    \\ simp [FORGE_FFIRECV_VENEER_def, untagged_def] \\ EVAL_TAC)
   \\ qpat_x_assum `∀j. FST _ ≠ Error` (qspec_then `1` mp_tac)
-  \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_with_def,
+  \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_slot_def,
            arm8_target_real_def, arm8_targetTheory.arm8_target_def]
-  \\ Cases_on `s.PC ∈ forge_prog_addresses ∧ s.PC ≠ FORGE_FFISEND16_VENEER ∧ s.PC ≠ FORGE_FFIRECV16_VENEER` \\ simp []
+  \\ Cases_on `s.PC ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧ s.PC ≠ FORGE_FFISEND_VENEER ∧ s.PC ≠ FORGE_FFIRECV_VENEER` \\ simp []
   \\ Cases_on `s.PC = FORGE_EXIT_VENEER` \\ simp []
   \\ Cases_on `s.PC = FORGE_INSTALL_VENEER` \\ simp []
-  \\ Cases_on `s.PC = FORGE_FFISEND16_VENEER` \\ simp [miscTheory.find_index_def]
-  \\ Cases_on `s.PC = FORGE_FFIRECV16_VENEER` \\ simp [miscTheory.find_index_def]
+  \\ Cases_on `s.PC = FORGE_FFISEND_VENEER` \\ simp [miscTheory.find_index_def]
+  \\ Cases_on `s.PC = FORGE_FFIRECV_VENEER` \\ simp [miscTheory.find_index_def]
 QED
 
 (* ---- 5. Conjunct 2: Forward Liveness under Error-Free Linux Syscalls ---- *)
@@ -1083,7 +1103,7 @@ Definition noerr_ffi_P_def:
     (idx = 0 ∧
      ∃bytes2.
        read_bytearray (s.REG 2w) (w2n (s.REG 3w))
-         (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+         (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
        (w2n (s.REG 3w) < 17 ⇒
           ∀inp out. RTC (whole_step svc_read_noerr_rel svc_write_noerr_rel) (inp, out, s) (inp, out, s')) ∧
        (17 ≤ w2n (s.REG 3w) ⇒
@@ -1092,7 +1112,7 @@ Definition noerr_ffi_P_def:
     (idx = 1 ∧
      ∃bytes2.
        read_bytearray (s.REG 2w) (w2n (s.REG 3w))
-         (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+         (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
        (w2n (s.REG 3w) < 17 ⇒
           ∀inp out. RTC (whole_step svc_read_noerr_rel svc_write_noerr_rel) (inp, out, s) (inp, out, s')) ∧
        (17 ≤ w2n (s.REG 3w) ∧ HD new_bs = 0w ⇒
@@ -1110,9 +1130,9 @@ QED
 
 Theorem liveness_eval_rtc[local]:
   ∀ck B tail_bs ffi s inp_cur out_cur t ms_end st_end.
-    let rmc = real_mc B (forge_mc_with (mk_real_ffi_if (noerr_ffi_P tail_bs)) forge_real_install_if) in
+    let rmc = real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs)) forge_real_install_if) in
       LENGTH tail_bs < 16 ∧
-      arm8_ok (erase s) ∧ sp_ok s ∧ bits_of s = B ∧ shim_loaded s.MEM ∧
+      arm8_ok (erase s) ∧ sp_ok s ∧ bits_of s = B ∧ shim_loaded_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w s.MEM ∧
       ffi.oracle = counter_ffi_oracle ∧
       ffi.ffi_state.write_limit = NONE ∧
       EVERY (λf. LENGTH f = 16) ffi.ffi_state.inputs ∧
@@ -1130,7 +1150,7 @@ Proof
   >- (rpt gen_tac \\ simp [LET_THM] \\ strip_tac
       \\ qpat_x_assum `evaluate _ _ 0 _ = _` mp_tac \\ simp [Once targetSemTheory.evaluate_def])
   \\ rpt gen_tac \\ simp [LET_THM]
-  \\ qabbrev_tac `rmc = real_mc B (forge_mc_with (mk_real_ffi_if (noerr_ffi_P tail_bs)) forge_real_install_if)`
+  \\ qabbrev_tac `rmc = real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs)) forge_real_install_if)`
   \\ strip_tac
   \\ qspecl_then [`B`, `noerr_ffi_P tail_bs`, `ffi`, `s`] mp_tac real_mc_eval_step_cases
   \\ simp [LET_THM] \\ strip_tac
@@ -1150,14 +1170,14 @@ Proof
     \\ simp [whole_step_def])
   >- (
     (* Exit veneer *)
-    drule_all cake_exit_to_svc_exit_group \\ simp [LET_THM] \\ strip_tac
+    mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] cake_exit_to_svc_exit_group_slot) shim16_common_words_ok) \\ disch_then drule_all \\ simp [LET_THM] \\ strip_tac
     \\ qexists_tac `inp_cur` \\ qexists_tac `out_cur`
     \\ qexists_tac `FUNPOW arm8$Next k s`
     \\ qexists_tac `if s.REG 0w = 0w then 0w else 1w`
     \\ simp [] \\ irule det_run_imp_rtc \\ qexists_tac `k` \\ simp [])
   >- (
     (* Install veneer *)
-    drule_all cake_install_to_svc_exit_group \\ simp [LET_THM] \\ strip_tac
+    mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] cake_install_to_svc_exit_group_slot) shim16_common_words_ok) \\ disch_then drule_all \\ simp [LET_THM] \\ strip_tac
     \\ qexists_tac `inp_cur` \\ qexists_tac `out_cur`
     \\ qexists_tac `FUNPOW arm8$Next 3 s` \\ qexists_tac `2w`
     \\ simp [] \\ irule det_run_imp_rtc \\ qexists_tac `3` \\ simp [])
@@ -1165,19 +1185,19 @@ Proof
     (* send16 veneer *)
     `∃bytes bytes2.
        read_bytearray (s.REG 0w) (w2n (s.REG 1w))
-         (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes ∧
+         (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE) = SOME bytes ∧
        read_bytearray (s.REG 2w) (w2n (s.REG 3w))
-         (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+         (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
        aligned 2 (s.REG 30w) ∧ untagged (s.REG 30w)` by simp []
     \\ drule_all (SIMP_RULE (srw_ss()) [LET_THM] counter_ffi_call_send16)
     \\ disch_then (qspecl_then [`bytes`, `bytes2`] strip_assume_tac)
     \\ imp_res_tac read_bytearray_mem_eq
-    \\ qabbrev_tac `s1 = mk_real_ffi_if (noerr_ffi_P tail_bs) 0 (0, new_bs, s)`
+    \\ qabbrev_tac `s1 = mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs) 0 (0, new_bs, s)`
     \\ `evaluate rmc ffi (SUC ck) s = evaluate rmc ffi' ck s1 ∧
         (∀j. FST (evaluate rmc ffi' j s1) ≠ Error)` by (
          `∀m. evaluate rmc ffi (SUC m) s = evaluate rmc ffi' m s1` by (
            gen_tac
-           \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_with_def,
+           \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_slot_def,
                     arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                     targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                     targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
@@ -1185,14 +1205,14 @@ Proof
          \\ conj_tac >- fs []
          \\ gen_tac \\ qpat_x_assum `∀j. FST (evaluate rmc ffi j s) ≠ Error` (qspec_then `SUC j` mp_tac)
          \\ simp [])
-    \\ `∃s_ex. noerr_ffi_P tail_bs 0 0 new_bs s s_ex ∧ ffi_return_ok new_bs s s_ex` by (
-         drule_all ffisend16_noerr_exists \\ strip_tac
+    \\ `∃s_ex. noerr_ffi_P tail_bs 0 0 new_bs s s_ex ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s_ex` by (
+         mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] ffisend16_noerr_exists_slot) (cj 7 m1_slot_params)) \\ disch_then drule_all \\ strip_tac
          \\ Cases_on `w2n (s.REG 3w) < 17`
          >- (fs [] \\ qexists_tac `s'` \\ simp [noerr_ffi_P_def] \\ qexists_tac `bytes2` \\ simp [])
          \\ `17 ≤ w2n (s.REG 3w)` by decide_tac
          \\ fs [] \\ qexists_tac `s'` \\ simp [noerr_ffi_P_def] \\ qexists_tac `bytes2` \\ simp [])
-    \\ `noerr_ffi_P tail_bs 0 0 new_bs s s1 ∧ ffi_return_ok new_bs s s1` by (
-         simp [Abbr `s1`, mk_real_ffi_if_def]
+    \\ `noerr_ffi_P tail_bs 0 0 new_bs s s1 ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s1` by (
+         simp [Abbr `s1`, mk_real_ffi_if_slot_def]
          \\ IF_CASES_TAC >- (SELECT_ELIM_TAC \\ conj_tac >- metis_tac [] \\ simp [])
          \\ metis_tac [])
     \\ `ffi'.ffi_state.inputs = ffi.ffi_state.inputs ∧ ffi'.ffi_state.write_limit = NONE ∧
@@ -1209,26 +1229,26 @@ Proof
     \\ qpat_x_assum `∀B tail_bs ffi s. _`
          (qspecl_then [`B`, `tail_bs`, `ffi'`, `s1`, `inp_cur`, `out_next`, `t`, `ms_end`, `st_end`] mp_tac)
     \\ simp [LET_THM]
-    \\ impl_tac >- fs [ffi_return_ok_def]
+    \\ impl_tac >- fs [ffi_return_ok_slot_def]
     \\ strip_tac
     \\ qexists_tac `inp_f` \\ qexists_tac `out_f` \\ qexists_tac `ms_f` \\ qexists_tac `ec`
     \\ simp [] \\ metis_tac [relationTheory.RTC_RTC])
   \\ (* recv16 veneer *)
      `∃bytes bytes2.
         read_bytearray (s.REG 0w) (w2n (s.REG 1w))
-          (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes ∧
+          (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE) = SOME bytes ∧
         read_bytearray (s.REG 2w) (w2n (s.REG 3w))
-          (λa. if a ∈ forge_prog_addresses then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
+          (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s.MEM a) else NONE) = SOME bytes2 ∧
         aligned 2 (s.REG 30w) ∧ untagged (s.REG 30w)` by simp []
   \\ drule_all counter_ffi_call_recv16
   \\ disch_then (qspecl_then [`bytes`, `bytes2`] strip_assume_tac)
   \\ imp_res_tac read_bytearray_mem_eq
-  \\ qabbrev_tac `s1 = mk_real_ffi_if (noerr_ffi_P tail_bs) 0 (1, new_bs, s)`
+  \\ qabbrev_tac `s1 = mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs) 0 (1, new_bs, s)`
   \\ `evaluate rmc ffi (SUC ck) s = evaluate rmc ffi' ck s1 ∧
       (∀j. FST (evaluate rmc ffi' j s1) ≠ Error)` by (
        `∀m. evaluate rmc ffi (SUC m) s = evaluate rmc ffi' m s1` by (
          gen_tac
-         \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_with_def,
+         \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc`, real_mc_def, forge_mc_slot_def,
                   arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                   targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                   targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
@@ -1238,11 +1258,11 @@ Proof
        \\ simp [])
   \\ Cases_on `w2n (s.REG 3w) < 17`
   >- (
-    `∃s_ex. noerr_ffi_P tail_bs 0 1 new_bs s s_ex ∧ ffi_return_ok new_bs s s_ex` by (
-       drule_all ffirecv16_noerr_exists \\ strip_tac
+    `∃s_ex. noerr_ffi_P tail_bs 0 1 new_bs s s_ex ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s_ex` by (
+       mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] ffirecv16_noerr_exists_slot) (cj 7 m1_slot_params)) \\ disch_then drule_all \\ strip_tac
        \\ gvs [] \\ qexists_tac `s'` \\ simp [noerr_ffi_P_def] \\ qexists_tac `bytes2` \\ simp [])
-    \\ `noerr_ffi_P tail_bs 0 1 new_bs s s1 ∧ ffi_return_ok new_bs s s1` by (
-         simp [Abbr `s1`, mk_real_ffi_if_def]
+    \\ `noerr_ffi_P tail_bs 0 1 new_bs s s1 ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s1` by (
+         simp [Abbr `s1`, mk_real_ffi_if_slot_def]
          \\ IF_CASES_TAC >- (SELECT_ELIM_TAC \\ conj_tac >- metis_tac [] \\ simp [])
          \\ metis_tac [])
     \\ `RTC (whole_step svc_read_noerr_rel svc_write_noerr_rel) (inp_cur, out_cur, s) (inp_cur, out_cur, s1)` by
@@ -1251,7 +1271,7 @@ Proof
     \\ qpat_x_assum `∀B tail_bs ffi s. _`
          (qspecl_then [`B`, `tail_bs`, `ffi'`, `s1`, `inp_cur`, `out_cur`, `t`, `ms_end`, `st_end`] mp_tac)
     \\ simp [LET_THM]
-    \\ impl_tac >- gvs [ffi_return_ok_def]
+    \\ impl_tac >- gvs [ffi_return_ok_slot_def]
     \\ strip_tac
     \\ qexists_tac `inp_f` \\ qexists_tac `out_f` \\ qexists_tac `ms_f` \\ qexists_tac `ec`
     \\ simp [] \\ metis_tac [relationTheory.RTC_RTC])
@@ -1261,20 +1281,20 @@ Proof
     (* EOF / truncated <16B: ffi'.io_events now contains event_is_err, so NO more FFI calls occur! *)
     `new_bs = 1w :: DROP 1 bytes2 ∧ ffi'.ffi_state = ffi.ffi_state ∧
      event_is_err (IO_event (ExtCall «recv16») bytes (ZIP (bytes2, new_bs)))` by gvs []
-    \\ `∃s_ex. noerr_ffi_P tail_bs 0 1 new_bs s s_ex ∧ ffi_return_ok new_bs s s_ex` by (
-         drule_all ffirecv16_noerr_exists \\ strip_tac
+    \\ `∃s_ex. noerr_ffi_P tail_bs 0 1 new_bs s s_ex ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s_ex` by (
+         mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] ffirecv16_noerr_exists_slot) (cj 7 m1_slot_params)) \\ disch_then drule_all \\ strip_tac
          \\ qpat_x_assum `∀tail_bs. 17 ≤ _ ∧ LENGTH tail_bs < 16 ⇒ _` (qspec_then `tail_bs` mp_tac)
          \\ simp [] \\ strip_tac
          \\ qexists_tac `s'` \\ simp [noerr_ffi_P_def] \\ qexists_tac `bytes2` \\ simp [])
-    \\ `noerr_ffi_P tail_bs 0 1 new_bs s s1 ∧ ffi_return_ok new_bs s s1` by (
-         simp [Abbr `s1`, mk_real_ffi_if_def]
+    \\ `noerr_ffi_P tail_bs 0 1 new_bs s s1 ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s1` by (
+         simp [Abbr `s1`, mk_real_ffi_if_slot_def]
          \\ IF_CASES_TAC >- (SELECT_ELIM_TAC \\ conj_tac >- metis_tac [] \\ simp [])
          \\ metis_tac [])
     \\ `RTC (whole_step svc_read_noerr_rel svc_write_noerr_rel) (tail_bs, out_cur, s) ([], out_cur, s1)` by
          (qpat_x_assum `noerr_ffi_P _ _ _ _ _ _` mp_tac \\ simp [noerr_ffi_P_def])
     \\ (* Now step purely via non-FFI steps from s1 to Halt/Install! *)
        `∀ck' s' ffi_s.
-          arm8_ok (erase s') ∧ sp_ok s' ∧ bits_of s' = B ∧ shim_loaded s'.MEM ∧
+          arm8_ok (erase s') ∧ sp_ok s' ∧ bits_of s' = B ∧ shim_loaded_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w s'.MEM ∧
           ffi_s.oracle = counter_ffi_oracle ∧
           (∀j. FST (evaluate rmc ffi_s j s') ≠ Error) ∧
           evaluate rmc ffi_s ck' s' = (Halt t, ms_end, st_end) ∧
@@ -1283,7 +1303,7 @@ Proof
             RTC (whole_step svc_read_noerr_rel svc_write_noerr_rel) ([], out_cur, s') (inp_f, out_f, ms_f) ∧
             svc_exit_group_rel ec ms_f` suffices_by (
           strip_tac \\ first_x_assum (qspecl_then [`ck`, `s1`, `ffi'`] mp_tac)
-          \\ impl_tac >- (fs [ffi_return_ok_def] \\ metis_tac [])
+          \\ impl_tac >- (fs [ffi_return_ok_slot_def] \\ metis_tac [])
           \\ strip_tac
           \\ qexists_tac `inp_f` \\ qexists_tac `out_f` \\ qexists_tac `ms_f` \\ qexists_tac `ec`
           \\ simp [] \\ fs [] \\ metis_tac [relationTheory.RTC_RTC])
@@ -1293,7 +1313,7 @@ Proof
     \\ qspecl_then [`B`, `noerr_ffi_P tail_bs`, `ffi_s`, `s'`] mp_tac real_mc_eval_step_cases
     \\ simp [LET_THM] \\ strip_tac
     >- (
-      qpat_x_assum `s'.PC ∈ forge_prog_addresses ∧ _ ⇒ _` (fn th => mp_tac th \\ impl_tac >- simp [] \\ strip_tac)
+      qpat_x_assum `s'.PC ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧ _ ⇒ _` (fn th => mp_tac th \\ impl_tac >- simp [] \\ strip_tac)
       \\ `evaluate rmc ffi_s ck' (arm8$Next s') = (Halt t, ms_end, st_end)` by fs []
       \\ `∀j. FST (evaluate rmc ffi_s j (arm8$Next s')) ≠ Error` by
            (gen_tac \\ qpat_x_assum `∀j. FST (evaluate rmc ffi_s j s') ≠ Error` (qspec_then `SUC j` mp_tac) \\ simp [])
@@ -1306,12 +1326,12 @@ Proof
       \\ qexists_tac `([], out_cur, arm8$Next s')`
       \\ simp [whole_step_def])
     >- (
-      qspec_then `s'` mp_tac cake_exit_to_svc_exit_group \\ simp [LET_THM] \\ strip_tac
+      qspecl_then [`forge_shim16_words`, `0x0041234Cw`, `0x00420000w`, `0x00460F38w`, `s'`] mp_tac cake_exit_to_svc_exit_group_slot \\ simp [shim16_common_words_ok] \\ simp [LET_THM] \\ strip_tac
       \\ qexists_tac `[]` \\ qexists_tac `out_cur` \\ qexists_tac `FUNPOW arm8$Next k s'`
       \\ qexists_tac `if s'.REG 0w = 0w then 0w else 1w`
       \\ simp [] \\ irule det_run_imp_rtc \\ qexists_tac `k` \\ simp [])
     >- (
-      qspec_then `s'` mp_tac cake_install_to_svc_exit_group \\ simp [LET_THM] \\ strip_tac
+      qspecl_then [`forge_shim16_words`, `0x0041234Cw`, `0x00420000w`, `0x00460F38w`, `s'`] mp_tac cake_install_to_svc_exit_group_slot \\ simp [shim16_common_words_ok] \\ simp [LET_THM] \\ strip_tac
       \\ qexists_tac `[]` \\ qexists_tac `out_cur` \\ qexists_tac `FUNPOW arm8$Next 3 s'`
       \\ qexists_tac `2w`
       \\ simp [] \\ irule det_run_imp_rtc \\ qexists_tac `3` \\ simp [])
@@ -1319,23 +1339,23 @@ Proof
       (* FFI impossible after event_is_err! *)
       `∃bytes' bytes2'.
          read_bytearray (s'.REG 0w) (w2n (s'.REG 1w))
-           (λa. if a ∈ forge_prog_addresses then SOME (s'.MEM a) else NONE) = SOME bytes' ∧
+           (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s'.MEM a) else NONE) = SOME bytes' ∧
          read_bytearray (s'.REG 2w) (w2n (s'.REG 3w))
-           (λa. if a ∈ forge_prog_addresses then SOME (s'.MEM a) else NONE) = SOME bytes2'` by metis_tac []
+           (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s'.MEM a) else NONE) = SOME bytes2'` by metis_tac []
       \\ qspecl_then [`ffi_s`, `bytes'`, `bytes2'`] mp_tac
            (SIMP_RULE (srw_ss()) [LET_THM] counter_ffi_call_send16)
       \\ simp [] \\ strip_tac
       \\ rename1 `call_FFI ffi_s _ _ _ = FFI_return ffi_next new_bs_next`
       \\ `evaluate rmc ffi_s (SUC ck') s' =
-          evaluate rmc ffi_next ck' (mk_real_ffi_if (noerr_ffi_P tail_bs) 0 (0, new_bs_next, s'))` by (
+          evaluate rmc ffi_next ck' (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs) 0 (0, new_bs_next, s'))` by (
            CONV_TAC (LHS_CONV (ONCE_REWRITE_CONV [targetSemTheory.evaluate_def]))
-           \\ simp [Abbr `rmc`, real_mc_def, forge_mc_with_def,
+           \\ simp [Abbr `rmc`, real_mc_def, forge_mc_slot_def,
                     arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                     targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                     targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
                     shift_mk_real_ffi_if, noerr_ffi_P_shift, forge_veneer_facts])
       \\ `ffi_next.io_events ≼ st_end.io_events` by (
-           qspecl_then [`rmc`, `ffi_next`, `ck'`, `mk_real_ffi_if (noerr_ffi_P tail_bs) 0 (0, new_bs_next, s')`]
+           qspecl_then [`rmc`, `ffi_next`, `ck'`, `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs) 0 (0, new_bs_next, s')`]
              mp_tac targetPropsTheory.evaluate_io_events_mono
            \\ gvs [])
       \\ `ffi_s.io_events ≼ st_end.io_events` by
@@ -1347,22 +1367,22 @@ Proof
       \\ fs [])
     \\ `∃bytes' bytes2'.
           read_bytearray (s'.REG 0w) (w2n (s'.REG 1w))
-            (λa. if a ∈ forge_prog_addresses then SOME (s'.MEM a) else NONE) = SOME bytes' ∧
+            (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s'.MEM a) else NONE) = SOME bytes' ∧
           read_bytearray (s'.REG 2w) (w2n (s'.REG 3w))
-            (λa. if a ∈ forge_prog_addresses then SOME (s'.MEM a) else NONE) = SOME bytes2'` by metis_tac []
+            (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s'.MEM a) else NONE) = SOME bytes2'` by metis_tac []
     \\ qspecl_then [`ffi_s`, `bytes'`, `bytes2'`] mp_tac counter_ffi_call_recv16
     \\ simp [] \\ strip_tac
     \\ rename1 `call_FFI ffi_s _ _ _ = FFI_return ffi_next new_bs_next`
     \\ `evaluate rmc ffi_s (SUC ck') s' =
-        evaluate rmc ffi_next ck' (mk_real_ffi_if (noerr_ffi_P tail_bs) 0 (1, new_bs_next, s'))` by (
+        evaluate rmc ffi_next ck' (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs) 0 (1, new_bs_next, s'))` by (
          CONV_TAC (LHS_CONV (ONCE_REWRITE_CONV [targetSemTheory.evaluate_def]))
-         \\ simp [Abbr `rmc`, real_mc_def, forge_mc_with_def,
+         \\ simp [Abbr `rmc`, real_mc_def, forge_mc_slot_def,
                   arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                   targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                   targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
                   shift_mk_real_ffi_if, noerr_ffi_P_shift, forge_veneer_facts])
     \\ `ffi_next.io_events ≼ st_end.io_events` by (
-         qspecl_then [`rmc`, `ffi_next`, `ck'`, `mk_real_ffi_if (noerr_ffi_P tail_bs) 0 (1, new_bs_next, s')`]
+         qspecl_then [`rmc`, `ffi_next`, `ck'`, `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs) 0 (1, new_bs_next, s')`]
            mp_tac targetPropsTheory.evaluate_io_events_mono
          \\ gvs [])
     \\ `ffi_s.io_events ≼ st_end.io_events` by
@@ -1379,12 +1399,12 @@ Proof
        qpat_x_assum `∀f fs. _` (qspecl_then [`h`, `rest_inps`] mp_tac) \\ simp [])
   \\ `TAKE 16 h = h` by metis_tac [listTheory.TAKE_LENGTH_ID]
   \\ `TAKE 16 (DROP 1 new_bs) = h` by simp [listTheory.TAKE_APPEND1]
-  \\ `∃s_ex. noerr_ffi_P tail_bs 0 1 new_bs s s_ex ∧ ffi_return_ok new_bs s s_ex` by (
-       drule_all ffirecv16_noerr_exists \\ strip_tac
+  \\ `∃s_ex. noerr_ffi_P tail_bs 0 1 new_bs s s_ex ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s_ex` by (
+       mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] ffirecv16_noerr_exists_slot) (cj 7 m1_slot_params)) \\ disch_then drule_all \\ strip_tac
        \\ qpat_x_assum `∀f. 17 ≤ _ ∧ LENGTH f = 16 ⇒ _` (qspec_then `h` mp_tac) \\ simp [] \\ strip_tac
        \\ qexists_tac `s'` \\ simp [noerr_ffi_P_def, listTheory.TAKE_APPEND1, listTheory.TAKE_LENGTH_ID_rwt])
-  \\ `noerr_ffi_P tail_bs 0 1 new_bs s s1 ∧ ffi_return_ok new_bs s s1` by (
-       simp [Abbr `s1`, mk_real_ffi_if_def]
+  \\ `noerr_ffi_P tail_bs 0 1 new_bs s s1 ∧ ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w new_bs s s1` by (
+       simp [Abbr `s1`, mk_real_ffi_if_slot_def]
        \\ IF_CASES_TAC >- (SELECT_ELIM_TAC \\ conj_tac >- metis_tac [] \\ simp [])
        \\ fs [] \\ metis_tac [])
   \\ `RTC (whole_step svc_read_noerr_rel svc_write_noerr_rel)
@@ -1398,7 +1418,7 @@ Proof
   \\ qpat_x_assum `∀B tail_bs ffi s. _`
        (qspecl_then [`B`, `tail_bs`, `ffi'`, `s1`, `FLAT rest_inps ++ tail_bs`, `out_cur`, `t`, `ms_end`, `st_end`] mp_tac)
   \\ simp [LET_THM]
-  \\ impl_tac >- gvs [ffi_return_ok_def]
+  \\ impl_tac >- gvs [ffi_return_ok_slot_def]
   \\ strip_tac
   \\ qexists_tac `inp_f` \\ qexists_tac `out_f` \\ qexists_tac `ms_f` \\ qexists_tac `ec`
   \\ simp [] \\ fs [] \\ metis_tac [relationTheory.RTC_RTC]
@@ -1414,8 +1434,8 @@ End
 
 Theorem post_err_nrc_safety[local]:
   ∀n allow_err B P ffi_cur s_cur inp_cur out_cur inp_f out_f ms_f ec ck t ms_end st_end.
-    let rmc = real_mc B (forge_mc_with (mk_real_ffi_if P) forge_real_install_if) in
-      arm8_ok (erase s_cur) ∧ sp_ok s_cur ∧ bits_of s_cur = B ∧ shim_loaded s_cur.MEM ∧
+    let rmc = real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P) forge_real_install_if) in
+      arm8_ok (erase s_cur) ∧ sp_ok s_cur ∧ bits_of s_cur = B ∧ shim_loaded_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w s_cur.MEM ∧
       ffi_cur.oracle = counter_ffi_oracle ∧
       (∀j. FST (evaluate rmc ffi_cur j s_cur) ≠ Error) ∧
       evaluate rmc ffi_cur ck s_cur = (Halt t, ms_end, st_end) ∧
@@ -1430,13 +1450,13 @@ Theorem post_err_nrc_safety[local]:
       (ec = 0w ⇒ t = Success ∧ st_end.io_events = ffi_cur.io_events)
 Proof
   completeInduct_on `n` \\ rpt gen_tac \\ simp [LET_THM]
-  \\ qabbrev_tac `rmc = real_mc B (forge_mc_with (mk_real_ffi_if P) forge_real_install_if)`
+  \\ qabbrev_tac `rmc = real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P) forge_real_install_if)`
   \\ strip_tac
   \\ qspecl_then [`B`, `P`, `ffi_cur`, `s_cur`] mp_tac real_mc_eval_step_cases
   \\ simp [LET_THM] \\ strip_tac
   >- (
     (* Prog address *)
-    qpat_x_assum `s_cur.PC ∈ forge_prog_addresses ∧ _ ⇒ _` (fn th => mp_tac th \\ impl_tac >- simp [] \\ strip_tac)
+    qpat_x_assum `s_cur.PC ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧ _ ⇒ _` (fn th => mp_tac th \\ impl_tac >- simp [] \\ strip_tac)
     \\ Cases_on `n`
     >- (gvs [arithmeticTheory.NRC, svc_exit_group_rel_def, is_svc0_at_def])
     \\ qpat_x_assum `NRC _ (SUC _) _ _` mp_tac
@@ -1455,7 +1475,7 @@ Proof
     \\ simp [LET_THM] \\ impl_tac >- (simp [] \\ metis_tac []) \\ simp [])
   >- (
     (* Exit veneer *)
-    drule_all cake_exit_universal \\ strip_tac
+    mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] cake_exit_universal_slot) shim16_common_words_ok) \\ disch_then drule_all \\ strip_tac
     \\ Cases_on `ck` >- (qpat_x_assum `evaluate _ _ 0 _ = _` mp_tac \\ simp [Once targetSemTheory.evaluate_def])
     \\ rename1 `evaluate rmc ffi_cur (SUC ck') s_cur = _`
     \\ qpat_x_assum `s_cur.PC = FORGE_EXIT_VENEER ⇒ _` mp_tac
@@ -1464,30 +1484,30 @@ Proof
     \\ Cases_on `s_cur.REG 0w = 0w` \\ fs [])
   >- (
     (* Install veneer *)
-    drule_all cake_install_universal \\ strip_tac \\ simp [])
+    mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] cake_install_universal_slot) shim16_common_words_ok) \\ disch_then drule_all \\ strip_tac \\ simp [])
   >- (
     (* send16 impossible after event_is_err *)
     Cases_on `ck` >- (qpat_x_assum `evaluate _ _ 0 _ = _` mp_tac \\ simp [Once targetSemTheory.evaluate_def])
     \\ rename1 `evaluate rmc ffi_cur (SUC ck') s_cur = _`
     \\ `∃bytes bytes2.
           read_bytearray (s_cur.REG 0w) (w2n (s_cur.REG 1w))
-            (λa. if a ∈ forge_prog_addresses then SOME (s_cur.MEM a) else NONE) = SOME bytes ∧
+            (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s_cur.MEM a) else NONE) = SOME bytes ∧
           read_bytearray (s_cur.REG 2w) (w2n (s_cur.REG 3w))
-            (λa. if a ∈ forge_prog_addresses then SOME (s_cur.MEM a) else NONE) = SOME bytes2` by metis_tac []
+            (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s_cur.MEM a) else NONE) = SOME bytes2` by metis_tac []
     \\ drule_all (SIMP_RULE (srw_ss()) [LET_THM] counter_ffi_call_send16)
     \\ disch_then (qspecl_then [`bytes`, `bytes2`] strip_assume_tac)
     \\ `evaluate rmc ffi_cur (SUC ck') s_cur =
-        evaluate (real_mc B (forge_mc_with (mk_real_ffi_if (λk. P (k + 1))) forge_real_install_if))
-          ffi' ck' (mk_real_ffi_if P 0 (0, new_bs, s_cur))` by (
+        evaluate (real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + 1))) forge_real_install_if))
+          ffi' ck' (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P 0 (0, new_bs, s_cur))` by (
          CONV_TAC (LHS_CONV (ONCE_REWRITE_CONV [targetSemTheory.evaluate_def]))
-         \\ simp [Abbr `rmc`, real_mc_def, forge_mc_with_def,
+         \\ simp [Abbr `rmc`, real_mc_def, forge_mc_slot_def,
                   arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                   targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                   targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
                   shift_mk_real_ffi_if, forge_veneer_facts])
     \\ `ffi'.io_events ≼ st_end.io_events` by (
-         qspecl_then [`real_mc B (forge_mc_with (mk_real_ffi_if (λk. P (k + 1))) forge_real_install_if)`,
-                      `ffi'`, `ck'`, `mk_real_ffi_if P 0 (0, new_bs, s_cur)`]
+         qspecl_then [`real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + 1))) forge_real_install_if)`,
+                      `ffi'`, `ck'`, `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P 0 (0, new_bs, s_cur)`]
            mp_tac targetPropsTheory.evaluate_io_events_mono
          \\ gvs [])
     \\ `ffi_cur.io_events ≼ st_end.io_events` by
@@ -1502,23 +1522,23 @@ Proof
   \\ rename1 `evaluate rmc ffi_cur (SUC ck') s_cur = _`
   \\ `∃bytes bytes2.
         read_bytearray (s_cur.REG 0w) (w2n (s_cur.REG 1w))
-          (λa. if a ∈ forge_prog_addresses then SOME (s_cur.MEM a) else NONE) = SOME bytes ∧
+          (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s_cur.MEM a) else NONE) = SOME bytes ∧
         read_bytearray (s_cur.REG 2w) (w2n (s_cur.REG 3w))
-          (λa. if a ∈ forge_prog_addresses then SOME (s_cur.MEM a) else NONE) = SOME bytes2` by metis_tac []
+          (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s_cur.MEM a) else NONE) = SOME bytes2` by metis_tac []
   \\ drule_all counter_ffi_call_recv16
   \\ disch_then (qspecl_then [`bytes`, `bytes2`] strip_assume_tac)
   \\ `evaluate rmc ffi_cur (SUC ck') s_cur =
-      evaluate (real_mc B (forge_mc_with (mk_real_ffi_if (λk. P (k + 1))) forge_real_install_if))
-        ffi' ck' (mk_real_ffi_if P 0 (1, new_bs, s_cur))` by (
+      evaluate (real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + 1))) forge_real_install_if))
+        ffi' ck' (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P 0 (1, new_bs, s_cur))` by (
        CONV_TAC (LHS_CONV (ONCE_REWRITE_CONV [targetSemTheory.evaluate_def]))
-       \\ simp [Abbr `rmc`, real_mc_def, forge_mc_with_def,
+       \\ simp [Abbr `rmc`, real_mc_def, forge_mc_slot_def,
                 arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                 targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                 targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
                 shift_mk_real_ffi_if, forge_veneer_facts])
   \\ `ffi'.io_events ≼ st_end.io_events` by (
-       qspecl_then [`real_mc B (forge_mc_with (mk_real_ffi_if (λk. P (k + 1))) forge_real_install_if)`,
-                    `ffi'`, `ck'`, `mk_real_ffi_if P 0 (1, new_bs, s_cur)`]
+       qspecl_then [`real_mc B (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + 1))) forge_real_install_if)`,
+                    `ffi'`, `ck'`, `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P 0 (1, new_bs, s_cur)`]
          mp_tac targetPropsTheory.evaluate_io_events_mono
        \\ gvs [])
   \\ `ffi_cur.io_events ≼ st_end.io_events` by
@@ -1532,20 +1552,20 @@ QED
 
 Theorem pre_err_nrc_safety[local]:
   ∀n allow_err ms0 inp r w inp_cur out_cur s_cur inp_f out_f ms_f ec posts sent_so_far step_cnt.
-    forge_elf_loaded code data ms0 ∧
+    forge_slot_loaded forge_shim16_words code data ms0 ∧
     inp = FLAT (TAKE r (chunks16 inp)) ++ inp_cur ∧
     r ≤ LENGTH (chunks16 inp) ∧
     LENGTH sent_so_far = w ∧
     FLAT sent_so_far = out_cur ∧
-    arm8_ok (erase s_cur) ∧ sp_ok s_cur ∧ bits_of s_cur = bits_of ms0 ∧ shim_loaded s_cur.MEM ∧
+    arm8_ok (erase s_cur) ∧ sp_ok s_cur ∧ bits_of s_cur = bits_of ms0 ∧ shim_loaded_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w s_cur.MEM ∧
     (∀extra_in wlim_rem P.
        (∀j. j < LENGTH posts ⇒ ∀idx bs s s'. P j idx bs s s' ⇔ s' = EL j posts) ⇒
        let io = <| inputs := TAKE r (chunks16 inp) ++ extra_in;
                    outputs := [];
                    write_limit := OPTION_MAP (λd. w + d) wlim_rem |> in
-       let rmc0 = real_mc (bits_of ms0) (forge_mc_with (mk_real_ffi_if P) forge_real_install_if) in
+       let rmc0 = real_mc (bits_of ms0) (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P) forge_real_install_if) in
        let rmc_cur = real_mc (bits_of ms0)
-                       (forge_mc_with (mk_real_ffi_if (λk. P (k + LENGTH posts))) forge_real_install_if) in
+                       (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts))) forge_real_install_if) in
        ∃ffi_cur.
          ffi_cur.oracle = counter_ffi_oracle ∧
          ffi_cur.ffi_state = <| inputs := extra_in; outputs := sent_so_far; write_limit := wlim_rem |> ∧
@@ -1566,9 +1586,9 @@ Proof
        simp [Abbr `P0`, mk_prefix_P_def]
   \\ `∃ffi0.
         let io0 = <| inputs := chunks16 inp; outputs := []; write_limit := NONE |> in
-        let rmc0 = real_mc (bits_of ms0) (forge_mc_with (mk_real_ffi_if P0) forge_real_install_if) in
+        let rmc0 = real_mc (bits_of ms0) (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P0) forge_real_install_if) in
         let rmc_c = real_mc (bits_of ms0)
-                      (forge_mc_with (mk_real_ffi_if (λk. P0 (k + LENGTH posts))) forge_real_install_if) in
+                      (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P0 (k + LENGTH posts))) forge_real_install_if) in
         ffi0.oracle = counter_ffi_oracle ∧
         ffi0.ffi_state = <| inputs := chunks16 inp_cur; outputs := sent_so_far; write_limit := NONE |> ∧
         sent_frames_of ffi0.io_events = sent_so_far ∧
@@ -1583,8 +1603,8 @@ Proof
        \\ disch_then (strip_assume_tac o SIMP_RULE (srw_ss() ++ numSimps.ARITH_ss) [LET_THM])
        \\ qexists_tac `ffi_cur` \\ gvs [LET_THM]
        \\ qspecl_then [`ms0`, `<| inputs := chunks16 inp; outputs := []; write_limit := NONE |>`,
-                       `mk_real_ffi_if P0`, `forge_real_install_if`] mp_tac forge_compile_exact
-       \\ simp [LET_THM, mk_real_ffi_if_ok] \\ strip_tac
+                       `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P0`, `forge_real_install_if`] mp_tac forge_compile_exact
+       \\ simp [LET_THM, mk_real_ffi_if_slot_ok] \\ strip_tac
        \\ gen_tac
        \\ qpat_x_assum `∀j. FST (evaluate _ _ j _) ≠ Error` (qspec_then `step_cnt + j` mp_tac) \\ simp [])
   \\ pop_assum (strip_assume_tac o SIMP_RULE (srw_ss() ++ numSimps.ARITH_ss) [LET_THM])
@@ -1592,7 +1612,7 @@ Proof
        real_mc_eval_step_cases
   \\ simp [LET_THM] \\ strip_tac
   >- (
-    (* Case 1: Normal instruction in forge_prog_addresses *)
+    (* Case 1: Normal instruction in forge_prog_addresses_slot 0x00420000w 0x00460F38w *)
     first_x_assum drule \\ strip_tac
     \\ Cases_on `n`
     >- (gvs [arithmeticTheory.NRC, svc_exit_group_rel_def, is_svc0_at_def])
@@ -1613,17 +1633,17 @@ Proof
       \\ qexists_tac `ffi_cur` \\ simp []
       \\ qspecl_then [`ms0`, `<| inputs := TAKE r (chunks16 inp) ++ extra_in; outputs := [];
                                  write_limit := OPTION_MAP (λd. w + d) wlim_rem |>`,
-                      `mk_real_ffi_if P`, `forge_real_install_if`] mp_tac forge_compile_exact
-      \\ simp [LET_THM, mk_real_ffi_if_ok]
+                      `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P`, `forge_real_install_if`] mp_tac forge_compile_exact
+      \\ simp [LET_THM, mk_real_ffi_if_slot_ok]
       \\ disch_then (assume_tac o cj 3)
       \\ `∀j. FST (evaluate (real_mc (bits_of ms0)
-                      (forge_mc_with (mk_real_ffi_if (λk. P (k + LENGTH posts))) forge_real_install_if))
+                      (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts))) forge_real_install_if))
                     ffi_cur j s_cur) ≠ Error` by
            (gen_tac \\ qpat_x_assum `∀j. FST (evaluate _ _ j (FUNPOW _ _ _)) ≠ Error` (qspec_then `step_cnt + j` mp_tac) \\ simp [])
       \\ qspecl_then [`bits_of ms0`, `λk. P (k + LENGTH posts)`, `ffi_cur`, `s_cur`] mp_tac
            real_mc_eval_step_cases
       \\ `s_cur.PC ≠ FORGE_EXIT_VENEER ∧ s_cur.PC ≠ FORGE_INSTALL_VENEER ∧
-          s_cur.PC ≠ FORGE_FFISEND16_VENEER ∧ s_cur.PC ≠ FORGE_FFIRECV16_VENEER` by
+          s_cur.PC ≠ FORGE_FFISEND_VENEER ∧ s_cur.PC ≠ FORGE_FFIRECV_VENEER` by
            metis_tac [forge_veneer_facts]
       \\ simp [LET_THM] \\ strip_tac
       \\ gen_tac
@@ -1633,12 +1653,12 @@ Proof
   )
   >- (
     (* Case 2: Exit veneer *)
-    drule_all cake_exit_universal \\ strip_tac
+    mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] cake_exit_universal_slot) shim16_common_words_ok) \\ disch_then drule_all \\ strip_tac
     \\ qspecl_then [`ms0`, `<| inputs := chunks16 inp; outputs := []; write_limit := NONE |>`,
-                    `mk_real_ffi_if P0`, `forge_real_install_if`] mp_tac forge_compile_exact
-    \\ simp [LET_THM, mk_real_ffi_if_ok]
+                    `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P0`, `forge_real_install_if`] mp_tac forge_compile_exact
+    \\ simp [LET_THM, mk_real_ffi_if_slot_ok]
     \\ disch_then (assume_tac o cj 5)
-    \\ `evaluate (real_mc (bits_of ms0) (forge_mc_with (mk_real_ffi_if P0) forge_real_install_if))
+    \\ `evaluate (real_mc (bits_of ms0) (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P0) forge_real_install_if))
           (counter_ffi <| inputs := chunks16 inp; outputs := []; write_limit := NONE |>)
           (step_cnt + 1) (FUNPOW arm8$Next 43 ms0) =
         (if s_cur.REG 0w = 0w then Halt Success else Halt Resource_limit_hit, s_cur, ffi0)` by
@@ -1658,18 +1678,18 @@ Proof
   )
   >- (
     (* Case 3: Install veneer *)
-    drule_all cake_install_universal \\ strip_tac
+    mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] cake_install_universal_slot) shim16_common_words_ok) \\ disch_then drule_all \\ strip_tac
     \\ qspecl_then [`ms0`, `<| inputs := chunks16 inp; outputs := []; write_limit := NONE |>`,
-                    `mk_real_ffi_if P0`, `forge_real_install_if`] mp_tac forge_compile_exact
-    \\ simp [LET_THM, mk_real_ffi_if_ok] \\ strip_tac
-    \\ `evaluate (real_mc (bits_of ms0) (forge_mc_with (mk_real_ffi_if P0) forge_real_install_if))
+                    `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P0`, `forge_real_install_if`] mp_tac forge_compile_exact
+    \\ simp [LET_THM, mk_real_ffi_if_slot_ok] \\ strip_tac
+    \\ `evaluate (real_mc (bits_of ms0) (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P0) forge_real_install_if))
           (counter_ffi <| inputs := chunks16 inp; outputs := []; write_limit := NONE |>)
           (step_cnt + ck) (FUNPOW arm8$Next 43 ms0) = (Halt t, ms_end, st_end)` by
          (`step_cnt + ck = ck + step_cnt` by decide_tac \\ pop_assum SUBST1_TAC
           \\ irule targetPropsTheory.evaluate_add_clock \\ simp [])
     \\ `ffi0.io_events ≼ st_end.io_events` by (
          qspecl_then [`real_mc (bits_of ms0)
-                        (forge_mc_with (mk_real_ffi_if (λk. P0 (k + LENGTH posts))) forge_real_install_if)`,
+                        (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P0 (k + LENGTH posts))) forge_real_install_if)`,
                       `ffi0`, `ck`, `s_cur`] mp_tac targetPropsTheory.evaluate_io_events_mono
          \\ gvs [])
     \\ `sent_frames_of ffi0.io_events ≼ sent_frames_of st_end.io_events` by simp [sent_frames_of_prefix]
@@ -1684,12 +1704,12 @@ Proof
     (* Case 4: send16 veneer *)
     `∃bytes bytes2.
        read_bytearray (s_cur.REG 0w) (w2n (s_cur.REG 1w))
-         (λa. if a ∈ forge_prog_addresses then SOME (s_cur.MEM a) else NONE) = SOME bytes ∧
+         (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s_cur.MEM a) else NONE) = SOME bytes ∧
        read_bytearray (s_cur.REG 2w) (w2n (s_cur.REG 3w))
-         (λa. if a ∈ forge_prog_addresses then SOME (s_cur.MEM a) else NONE) = SOME bytes2 ∧
+         (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s_cur.MEM a) else NONE) = SOME bytes2 ∧
        aligned 2 (s_cur.REG 30w) ∧ untagged (s_cur.REG 30w)` by simp []
     \\ imp_res_tac read_bytearray_mem_eq
-    \\ drule_all ffisend16_universal \\ strip_tac
+    \\ mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] ffisend16_universal_slot) (cj 7 m1_slot_params)) \\ disch_then drule_all \\ strip_tac
     \\ Cases_on `w2n (s_cur.REG 3w) < 17`
     >- (
       (* Subcase 4a: short send16 (<17B) *)
@@ -1700,8 +1720,8 @@ Proof
                                   `posts ++ [s']`, `sent_so_far`, `step_cnt + 1`] mp_tac)
       \\ impl_tac
       >- (
-        simp [] \\ rpt conj_tac >- fs [ffi_return_ok_def] >- fs [ffi_return_ok_def]
-        >- fs [ffi_return_ok_def] >- fs [ffi_return_ok_def]
+        simp [] \\ rpt conj_tac >- fs [ffi_return_ok_slot_def] >- fs [ffi_return_ok_slot_def]
+        >- fs [ffi_return_ok_slot_def] >- fs [ffi_return_ok_slot_def]
         \\ rpt gen_tac \\ strip_tac
         \\ qpat_assum `∀extra_in wlim_rem P. _` (qspecl_then [`extra_in`, `wlim_rem`, `P`] mp_tac)
         \\ impl_tac >- (rpt strip_tac \\ first_x_assum (qspec_then `j` mp_tac) \\ simp [rich_listTheory.EL_APPEND1])
@@ -1709,25 +1729,25 @@ Proof
         \\ drule_all (SIMP_RULE (srw_ss() ++ numSimps.ARITH_ss) [LET_THM] counter_ffi_call_send16)
         \\ disch_then (qspecl_then [`bytes`, `bytes2`] strip_assume_tac)
         \\ qexists_tac `ffi'` \\ simp []
-        \\ `mk_real_ffi_if (λk. P (k + LENGTH posts)) 0 (0, bytes2, s_cur) = s'` by (
+        \\ `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts)) 0 (0, bytes2, s_cur) = s'` by (
              irule mk_real_ffi_if_select \\ simp []
              \\ qpat_x_assum `∀j. j < LENGTH posts + 1 ⇒ _` (qspec_then `LENGTH posts` mp_tac)
              \\ simp [rich_listTheory.EL_LENGTH_APPEND])
         \\ `∀k. evaluate (real_mc (bits_of ms0)
-                  (forge_mc_with (mk_real_ffi_if (λk. P (k + LENGTH posts))) forge_real_install_if))
+                  (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts))) forge_real_install_if))
                 ffi_cur (SUC k) s_cur =
                 evaluate (real_mc (bits_of ms0)
-                  (forge_mc_with (mk_real_ffi_if (λk. P (k + (LENGTH posts + 1)))) forge_real_install_if))
+                  (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + (LENGTH posts + 1)))) forge_real_install_if))
                 ffi' k s'` by (
              gen_tac
-             \\ simp [Once targetSemTheory.evaluate_def, real_mc_def, forge_mc_with_def,
+             \\ simp [Once targetSemTheory.evaluate_def, real_mc_def, forge_mc_slot_def,
                       arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                       targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                       targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
                       shift_mk_real_ffi_if]
-             \\ `FORGE_FFISEND16_VENEER ∉ forge_prog_addresses ∧
-                 FORGE_FFISEND16_VENEER ≠ FORGE_EXIT_VENEER ∧
-                 FORGE_FFISEND16_VENEER ≠ FORGE_INSTALL_VENEER` by
+             \\ `FORGE_FFISEND_VENEER ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧
+                 FORGE_FFISEND_VENEER ≠ FORGE_EXIT_VENEER ∧
+                 FORGE_FFISEND_VENEER ≠ FORGE_INSTALL_VENEER` by
                   simp [forge_veneer_facts]
              \\ `(λk. P (k + 1 + LENGTH posts)) = (λk. P (k + (LENGTH posts + 1)))` by
                   (simp [FUN_EQ_THM] \\ gen_tac \\ AP_TERM_TAC \\ decide_tac)
@@ -1748,8 +1768,8 @@ Proof
                                   `posts ++ [s']`, `sent_so_far ++ [frame]`, `step_cnt + 1`] mp_tac)
       \\ impl_tac
       >- (
-        simp [listTheory.FLAT_APPEND] \\ rpt conj_tac >- fs [ffi_return_ok_def] >- fs [ffi_return_ok_def]
-        >- fs [ffi_return_ok_def] >- fs [ffi_return_ok_def]
+        simp [listTheory.FLAT_APPEND] \\ rpt conj_tac >- fs [ffi_return_ok_slot_def] >- fs [ffi_return_ok_slot_def]
+        >- fs [ffi_return_ok_slot_def] >- fs [ffi_return_ok_slot_def]
         \\ rpt gen_tac \\ strip_tac
         \\ qabbrev_tac `wlim_prev = OPTION_MAP SUC wlim_rem`
         \\ `OPTION_MAP (λd. d + w) wlim_prev = OPTION_MAP (λd. d + (w + 1)) wlim_rem` by
@@ -1764,25 +1784,25 @@ Proof
                                 write_limit := wlim_rem |>` by (
              Cases_on `wlim_rem` \\ fs [Abbr `wlim_prev`, Abbr `frame`, counter_io_component_equality])
         \\ qexists_tac `ffi'` \\ simp [Abbr `frame`]
-        \\ `mk_real_ffi_if (λk. P (k + LENGTH posts)) 0 (0, 0w :: DROP 1 bytes2, s_cur) = s'` by (
+        \\ `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts)) 0 (0, 0w :: DROP 1 bytes2, s_cur) = s'` by (
              irule mk_real_ffi_if_select \\ simp []
              \\ qpat_x_assum `∀j. j < LENGTH posts + 1 ⇒ _` (qspec_then `LENGTH posts` mp_tac)
              \\ simp [rich_listTheory.EL_LENGTH_APPEND])
         \\ `∀k. evaluate (real_mc (bits_of ms0)
-                  (forge_mc_with (mk_real_ffi_if (λk. P (k + LENGTH posts))) forge_real_install_if))
+                  (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts))) forge_real_install_if))
                 ffi_cur (SUC k) s_cur =
                 evaluate (real_mc (bits_of ms0)
-                  (forge_mc_with (mk_real_ffi_if (λk. P (k + (LENGTH posts + 1)))) forge_real_install_if))
+                  (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + (LENGTH posts + 1)))) forge_real_install_if))
                 ffi' k s'` by (
              gen_tac
-             \\ simp [Once targetSemTheory.evaluate_def, real_mc_def, forge_mc_with_def,
+             \\ simp [Once targetSemTheory.evaluate_def, real_mc_def, forge_mc_slot_def,
                       arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                       targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                       targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
                       shift_mk_real_ffi_if]
-             \\ `FORGE_FFISEND16_VENEER ∉ forge_prog_addresses ∧
-                 FORGE_FFISEND16_VENEER ≠ FORGE_EXIT_VENEER ∧
-                 FORGE_FFISEND16_VENEER ≠ FORGE_INSTALL_VENEER` by
+             \\ `FORGE_FFISEND_VENEER ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧
+                 FORGE_FFISEND_VENEER ≠ FORGE_EXIT_VENEER ∧
+                 FORGE_FFISEND_VENEER ≠ FORGE_INSTALL_VENEER` by
                   simp [forge_veneer_facts]
              \\ `(λk. P (k + 1 + LENGTH posts)) = (λk. P (k + (LENGTH posts + 1)))` by
                   (simp [FUN_EQ_THM] \\ gen_tac \\ AP_TERM_TAC \\ decide_tac)
@@ -1805,23 +1825,23 @@ Proof
            (SIMP_RULE (srw_ss() ++ numSimps.ARITH_ss) [LET_THM] counter_ffi_call_send16)
       \\ simp [] \\ strip_tac
       \\ `sent_frames_of ffi'.io_events = sent_so_far ++ [frame]` by simp [Abbr `frame`]
-      \\ `mk_real_ffi_if (λk. P1 (k + LENGTH posts)) 0 (0, 1w :: DROP 1 bytes2, s_cur) = s'` by (
+      \\ `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P1 (k + LENGTH posts)) 0 (0, 1w :: DROP 1 bytes2, s_cur) = s'` by (
            irule mk_real_ffi_if_select \\ simp [Abbr `P1`, mk_prefix_P_def, rich_listTheory.EL_LENGTH_APPEND])
       \\ qabbrev_tac `io_err = <| inputs := chunks16 inp; outputs := []; write_limit := SOME w |>`
-      \\ qabbrev_tac `rmc1 = real_mc (bits_of ms0) (forge_mc_with (mk_real_ffi_if P1) forge_real_install_if)`
+      \\ qabbrev_tac `rmc1 = real_mc (bits_of ms0) (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P1) forge_real_install_if)`
       \\ qabbrev_tac `rmc_post = real_mc (bits_of ms0)
-                       (forge_mc_with (mk_real_ffi_if (λk. P1 (k + (LENGTH posts + 1)))) forge_real_install_if)`
+                       (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P1 (k + (LENGTH posts + 1)))) forge_real_install_if)`
       \\ `∀k. evaluate rmc1 (counter_ffi io_err) (step_cnt + 1 + k) (FUNPOW arm8$Next 43 ms0) =
               evaluate rmc_post ffi' k s'` by (
            gen_tac
            \\ `evaluate rmc1 (counter_ffi io_err) (step_cnt + 1 + k) (FUNPOW arm8$Next 43 ms0) =
                evaluate (real_mc (bits_of ms0)
-                 (forge_mc_with (mk_real_ffi_if (λk. P1 (k + LENGTH posts))) forge_real_install_if))
+                 (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P1 (k + LENGTH posts))) forge_real_install_if))
                  ffi_cur (SUC k) s_cur` by (
                 qpat_x_assum `∀k. evaluate _ _ _ (FUNPOW _ _ _) = evaluate _ ffi_cur _ _` (qspec_then `SUC k` mp_tac)
                 \\ simp [Abbr `io_err`, Abbr `rmc1`, arithmeticTheory.ADD1, arithmeticTheory.ADD_CLAUSES])
            \\ pop_assum SUBST1_TAC
-           \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc_post`, real_mc_def, forge_mc_with_def,
+           \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc_post`, real_mc_def, forge_mc_slot_def,
                     arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                     targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                     targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
@@ -1830,9 +1850,9 @@ Proof
                 (simp [FUN_EQ_THM] \\ gen_tac \\ AP_TERM_TAC \\ decide_tac)
            \\ simp [])
       \\ qspecl_then [`ms0`, `<| inputs := chunks16 inp; outputs := []; write_limit := SOME w |>`,
-                      `mk_real_ffi_if P1`, `forge_real_install_if`] mp_tac
+                      `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P1`, `forge_real_install_if`] mp_tac
            forge_compile_exact
-      \\ simp [LET_THM, mk_real_ffi_if_ok]
+      \\ simp [LET_THM, mk_real_ffi_if_slot_ok]
       \\ disch_then (fn th => assume_tac (cj 3 th) \\ strip_assume_tac (cj 4 th))
       \\ `evaluate rmc_post ffi' ck s' = (Halt t, ms_end, st_end)` by (
            `evaluate rmc1 (counter_ffi <|inputs := chunks16 inp; outputs := []; write_limit := SOME w|>)
@@ -1852,7 +1872,7 @@ Proof
                       `ck`, `t`, `ms_end`, `st_end`] mp_tac post_err_nrc_safety
       \\ simp [LET_THM]
       \\ (impl_tac >- (
-           qpat_x_assum `ffi_return_ok _ _ _` (strip_assume_tac o REWRITE_RULE [ffi_return_ok_def])
+           qpat_x_assum `ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w _ _ _` (strip_assume_tac o REWRITE_RULE [ffi_return_ok_slot_def])
            \\ qpat_x_assum `event_is_err _` mp_tac
            \\ qpat_x_assum `NRC _ n' _ _` mp_tac
            \\ qpat_assum `evaluate rmc_post _ _ _ = _` mp_tac
@@ -1885,12 +1905,12 @@ Proof
   \\ (* Case 5: recv16 veneer *)
     `∃bytes bytes2.
        read_bytearray (s_cur.REG 0w) (w2n (s_cur.REG 1w))
-         (λa. if a ∈ forge_prog_addresses then SOME (s_cur.MEM a) else NONE) = SOME bytes ∧
+         (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s_cur.MEM a) else NONE) = SOME bytes ∧
        read_bytearray (s_cur.REG 2w) (w2n (s_cur.REG 3w))
-         (λa. if a ∈ forge_prog_addresses then SOME (s_cur.MEM a) else NONE) = SOME bytes2 ∧
+         (λa. if a ∈ forge_prog_addresses_slot 0x00420000w 0x00460F38w then SOME (s_cur.MEM a) else NONE) = SOME bytes2 ∧
        aligned 2 (s_cur.REG 30w) ∧ untagged (s_cur.REG 30w)` by simp []
     \\ imp_res_tac read_bytearray_mem_eq
-    \\ drule_all ffirecv16_universal \\ strip_tac
+    \\ mp_tac (MATCH_MP (ONCE_REWRITE_RULE [GSYM AND_IMP_INTRO] ffirecv16_universal_slot) (cj 7 m1_slot_params)) \\ disch_then drule_all \\ strip_tac
     \\ Cases_on `w2n (s_cur.REG 3w) < 17`
   >- (
     (* Subcase 5a: short recv16 (<17B) *)
@@ -1901,8 +1921,8 @@ Proof
                                 `posts ++ [s']`, `sent_so_far`, `step_cnt + 1`] mp_tac)
     \\ impl_tac
     >- (
-      simp [] \\ rpt conj_tac >- fs [ffi_return_ok_def] >- fs [ffi_return_ok_def]
-      >- fs [ffi_return_ok_def] >- fs [ffi_return_ok_def]
+      simp [] \\ rpt conj_tac >- fs [ffi_return_ok_slot_def] >- fs [ffi_return_ok_slot_def]
+      >- fs [ffi_return_ok_slot_def] >- fs [ffi_return_ok_slot_def]
       \\ rpt gen_tac \\ strip_tac
       \\ qpat_assum `∀extra_in wlim_rem P. _` (qspecl_then [`extra_in`, `wlim_rem`, `P`] mp_tac)
       \\ impl_tac >- (rpt strip_tac \\ first_x_assum (qspec_then `j` mp_tac) \\ simp [rich_listTheory.EL_APPEND1])
@@ -1910,26 +1930,26 @@ Proof
       \\ drule_all counter_ffi_call_recv16
       \\ disch_then (qspecl_then [`bytes`, `bytes2`] strip_assume_tac)
       \\ qexists_tac `ffi'` \\ simp []
-      \\ `mk_real_ffi_if (λk. P (k + LENGTH posts)) 0 (1, bytes2, s_cur) = s'` by (
+      \\ `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts)) 0 (1, bytes2, s_cur) = s'` by (
            irule mk_real_ffi_if_select \\ simp []
            \\ qpat_x_assum `∀j. j < LENGTH posts + 1 ⇒ _` (qspec_then `LENGTH posts` mp_tac)
            \\ simp [rich_listTheory.EL_LENGTH_APPEND])
       \\ `∀k. evaluate (real_mc (bits_of ms0)
-                (forge_mc_with (mk_real_ffi_if (λk. P (k + LENGTH posts))) forge_real_install_if))
+                (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts))) forge_real_install_if))
               ffi_cur (SUC k) s_cur =
               evaluate (real_mc (bits_of ms0)
-                (forge_mc_with (mk_real_ffi_if (λk. P (k + (LENGTH posts + 1)))) forge_real_install_if))
+                (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + (LENGTH posts + 1)))) forge_real_install_if))
               ffi' k s'` by (
            gen_tac
-           \\ simp [Once targetSemTheory.evaluate_def, real_mc_def, forge_mc_with_def,
+           \\ simp [Once targetSemTheory.evaluate_def, real_mc_def, forge_mc_slot_def,
                     arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                     targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                     targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
                     shift_mk_real_ffi_if]
-           \\ `FORGE_FFIRECV16_VENEER ∉ forge_prog_addresses ∧
-               FORGE_FFIRECV16_VENEER ≠ FORGE_EXIT_VENEER ∧
-               FORGE_FFIRECV16_VENEER ≠ FORGE_INSTALL_VENEER ∧
-               FORGE_FFIRECV16_VENEER ≠ FORGE_FFISEND16_VENEER` by
+           \\ `FORGE_FFIRECV_VENEER ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧
+               FORGE_FFIRECV_VENEER ≠ FORGE_EXIT_VENEER ∧
+               FORGE_FFIRECV_VENEER ≠ FORGE_INSTALL_VENEER ∧
+               FORGE_FFIRECV_VENEER ≠ FORGE_FFISEND_VENEER` by
                 simp [forge_veneer_facts]
            \\ `(λk. P (k + 1 + LENGTH posts)) = (λk. P (k + (LENGTH posts + 1)))` by
                 (simp [FUN_EQ_THM] \\ gen_tac \\ AP_TERM_TAC \\ decide_tac)
@@ -1951,8 +1971,8 @@ Proof
                                 `posts ++ [s']`, `sent_so_far`, `step_cnt + 1`] mp_tac)
     \\ impl_tac
     >- (
-      simp [] \\ rpt conj_tac >- fs [ffi_return_ok_def] >- fs [ffi_return_ok_def]
-      >- fs [ffi_return_ok_def] >- fs [ffi_return_ok_def]
+      simp [] \\ rpt conj_tac >- fs [ffi_return_ok_slot_def] >- fs [ffi_return_ok_slot_def]
+      >- fs [ffi_return_ok_slot_def] >- fs [ffi_return_ok_slot_def]
       \\ rpt gen_tac \\ strip_tac
       \\ qpat_assum `∀extra_in wlim_rem P. _` (qspecl_then [`frame :: extra_in`, `wlim_rem`, `P`] mp_tac)
       \\ impl_tac >- (rpt strip_tac \\ first_x_assum (qspec_then `j` mp_tac) \\ simp [rich_listTheory.EL_APPEND1])
@@ -1962,26 +1982,26 @@ Proof
       \\ `ffi'.ffi_state = <| inputs := extra_in; outputs := sent_so_far; write_limit := wlim_rem |>` by
            simp [counter_io_component_equality]
       \\ qexists_tac `ffi'` \\ simp []
-      \\ `mk_real_ffi_if (λk. P (k + LENGTH posts)) 0 (1, 0w :: frame ++ DROP 17 bytes2, s_cur) = s'` by (
+      \\ `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts)) 0 (1, 0w :: frame ++ DROP 17 bytes2, s_cur) = s'` by (
            irule mk_real_ffi_if_select \\ simp []
            \\ qpat_x_assum `∀j. j < LENGTH posts + 1 ⇒ _` (qspec_then `LENGTH posts` mp_tac)
            \\ simp [rich_listTheory.EL_LENGTH_APPEND])
       \\ `∀k. evaluate (real_mc (bits_of ms0)
-                (forge_mc_with (mk_real_ffi_if (λk. P (k + LENGTH posts))) forge_real_install_if))
+                (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + LENGTH posts))) forge_real_install_if))
               ffi_cur (SUC k) s_cur =
               evaluate (real_mc (bits_of ms0)
-                (forge_mc_with (mk_real_ffi_if (λk. P (k + (LENGTH posts + 1)))) forge_real_install_if))
+                (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P (k + (LENGTH posts + 1)))) forge_real_install_if))
               ffi' k s'` by (
            gen_tac
-           \\ simp [Once targetSemTheory.evaluate_def, real_mc_def, forge_mc_with_def,
+           \\ simp [Once targetSemTheory.evaluate_def, real_mc_def, forge_mc_slot_def,
                     arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                     targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                     targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
                     shift_mk_real_ffi_if]
-           \\ `FORGE_FFIRECV16_VENEER ∉ forge_prog_addresses ∧
-               FORGE_FFIRECV16_VENEER ≠ FORGE_EXIT_VENEER ∧
-               FORGE_FFIRECV16_VENEER ≠ FORGE_INSTALL_VENEER ∧
-               FORGE_FFIRECV16_VENEER ≠ FORGE_FFISEND16_VENEER` by
+           \\ `FORGE_FFIRECV_VENEER ∉ forge_prog_addresses_slot 0x00420000w 0x00460F38w ∧
+               FORGE_FFIRECV_VENEER ≠ FORGE_EXIT_VENEER ∧
+               FORGE_FFIRECV_VENEER ≠ FORGE_INSTALL_VENEER ∧
+               FORGE_FFIRECV_VENEER ≠ FORGE_FFISEND_VENEER` by
                 simp [forge_veneer_facts]
            \\ `(λk. P (k + 1 + LENGTH posts)) = (λk. P (k + (LENGTH posts + 1)))` by
                 (simp [FUN_EQ_THM] \\ gen_tac \\ AP_TERM_TAC \\ decide_tac)
@@ -2000,23 +2020,23 @@ Proof
     \\ disch_then (strip_assume_tac o SIMP_RULE (srw_ss() ++ numSimps.ARITH_ss) [LET_THM])
     \\ qspecl_then [`ffi_cur`, `bytes`, `bytes2`] mp_tac counter_ffi_call_recv16
     \\ simp [] \\ strip_tac
-    \\ `mk_real_ffi_if (λk. P1 (k + LENGTH posts)) 0 (1, 1w :: DROP 1 bytes2, s_cur) = s'` by (
+    \\ `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P1 (k + LENGTH posts)) 0 (1, 1w :: DROP 1 bytes2, s_cur) = s'` by (
          irule mk_real_ffi_if_select \\ simp [Abbr `P1`, mk_prefix_P_def, rich_listTheory.EL_LENGTH_APPEND])
     \\ qabbrev_tac `io_eof = <| inputs := TAKE r (chunks16 inp); outputs := []; write_limit := NONE |>`
-    \\ qabbrev_tac `rmc1 = real_mc (bits_of ms0) (forge_mc_with (mk_real_ffi_if P1) forge_real_install_if)`
+    \\ qabbrev_tac `rmc1 = real_mc (bits_of ms0) (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P1) forge_real_install_if)`
     \\ qabbrev_tac `rmc_post = real_mc (bits_of ms0)
-                     (forge_mc_with (mk_real_ffi_if (λk. P1 (k + (LENGTH posts + 1)))) forge_real_install_if)`
+                     (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P1 (k + (LENGTH posts + 1)))) forge_real_install_if)`
     \\ `∀k. evaluate rmc1 (counter_ffi io_eof) (step_cnt + 1 + k) (FUNPOW arm8$Next 43 ms0) =
             evaluate rmc_post ffi' k s'` by (
          gen_tac
          \\ `evaluate rmc1 (counter_ffi io_eof) (step_cnt + 1 + k) (FUNPOW arm8$Next 43 ms0) =
              evaluate (real_mc (bits_of ms0)
-               (forge_mc_with (mk_real_ffi_if (λk. P1 (k + LENGTH posts))) forge_real_install_if))
+               (forge_mc_slot 0x00420000w 0x00460F38w [ExtCall «send16»; ExtCall «recv16»] (mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (λk. P1 (k + LENGTH posts))) forge_real_install_if))
                ffi_cur (SUC k) s_cur` by (
               qpat_x_assum `∀k. evaluate _ _ _ (FUNPOW _ _ _) = evaluate _ ffi_cur _ _` (qspec_then `SUC k` mp_tac)
               \\ simp [Abbr `io_eof`, Abbr `rmc1`, arithmeticTheory.ADD1, arithmeticTheory.ADD_CLAUSES])
          \\ pop_assum SUBST1_TAC
-         \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc_post`, real_mc_def, forge_mc_with_def,
+         \\ simp [Once targetSemTheory.evaluate_def, Abbr `rmc_post`, real_mc_def, forge_mc_slot_def,
                   arm8_target_real_def, arm8_targetTheory.arm8_target_def,
                   targetSemTheory.apply_oracle_def, miscTheory.find_index_def,
                   targetSemTheory.read_ffi_bytearrays_def, targetSemTheory.read_ffi_bytearray_def,
@@ -2025,9 +2045,9 @@ Proof
               (simp [FUN_EQ_THM] \\ gen_tac \\ AP_TERM_TAC \\ decide_tac)
          \\ simp [])
     \\ qspecl_then [`ms0`, `<| inputs := TAKE r (chunks16 inp); outputs := []; write_limit := NONE |>`,
-                    `mk_real_ffi_if P1`, `forge_real_install_if`] mp_tac
+                    `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w P1`, `forge_real_install_if`] mp_tac
          forge_compile_exact
-    \\ simp [LET_THM, mk_real_ffi_if_ok, limit_frames_def]
+    \\ simp [LET_THM, mk_real_ffi_if_slot_ok, limit_frames_def]
     \\ disch_then (fn th => assume_tac (cj 3 th) \\ strip_assume_tac (cj 4 th))
     \\ `evaluate rmc_post ffi' ck s' = (Halt t, ms_end, st_end)` by (
          `evaluate rmc1 (counter_ffi <|inputs := TAKE r (chunks16 inp); outputs := []; write_limit := NONE|>)
@@ -2047,7 +2067,7 @@ Proof
                     `ck`, `t`, `ms_end`, `st_end`] mp_tac post_err_nrc_safety
     \\ simp [LET_THM]
     \\ (impl_tac >- (
-         qpat_x_assum `ffi_return_ok _ _ _` (strip_assume_tac o REWRITE_RULE [ffi_return_ok_def])
+         qpat_x_assum `ffi_return_ok_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w _ _ _` (strip_assume_tac o REWRITE_RULE [ffi_return_ok_slot_def])
          \\ qpat_x_assum `event_is_err _` mp_tac
          \\ qpat_x_assum `NRC _ n' _ _` mp_tac
          \\ qpat_assum `evaluate rmc_post _ _ _ = _` mp_tac
@@ -2093,12 +2113,18 @@ QED
 
 Theorem forge_m1_kernel_correct:
   ∀ms0:arm8_state.
-    forge_elf_loaded code data ms0 ⇒
+    forge_slot_loaded forge_shim16_words code data ms0 ⇒
       let ms1 = FUNPOW arm8$Next 43 ms0 in
+      let cb_end = slot_cb_end (LENGTH code) in
+      let bm_end = slot_bm_buf_end (LENGTH data) in
+      let cbsp = slot_cbspace (LENGTH code) in
       (∀(io:counter_io) ffi_if inst_if.
          io.outputs = [] ∧
-         real_interfer_ok (bits_of ms0) ffi_if inst_if ⇒
-           let rmc = real_mc (bits_of ms0) (forge_mc_with ffi_if inst_if) in
+         real_interfer_ok_slot cb_end bm_end cbsp
+           [ExtCall «send16»; ExtCall «recv16»] (bits_of ms0) ffi_if inst_if ⇒
+           let rmc = real_mc (bits_of ms0)
+                       (forge_mc_slot cb_end bm_end
+                          [ExtCall «send16»; ExtCall «recv16»] ffi_if inst_if) in
              rmc.target = arm8_target_real (bits_of ms0) ∧
              ¬machine_sem rmc (counter_ffi io) ms1 Fail) ∧
       (∀inp:word8 list.
@@ -2120,14 +2146,14 @@ Theorem forge_m1_kernel_correct:
          exit_code = 0w ⇒
            out_f = FLAT (SND (SND (counter_run 0w 0w (chunks16 inp)))))
 Proof
-  rpt strip_tac \\ simp [LET_THM]
+  rpt strip_tac \\ simp [LET_THM, m1_slot_params]
   \\ `det_run 43 ms0 (FUNPOW arm8$Next 43 ms0) ∧
       arm8_ok (erase (FUNPOW arm8$Next 43 ms0)) ∧
       sp_ok (FUNPOW arm8$Next 43 ms0) ∧
       bits_of (FUNPOW arm8$Next 43 ms0) = bits_of ms0 ∧
-      shim_loaded (FUNPOW arm8$Next 43 ms0).MEM` by (
-       fs [forge_elf_loaded_def]
-       \\ qspec_then `ms0` mp_tac startup_to_cake_main \\ simp [LET_THM])
+      shim_loaded_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (FUNPOW arm8$Next 43 ms0).MEM` by (
+       fs [forge_slot_loaded_def, LET_THM, m1_slot_params]
+       \\ qspecl_then [`forge_shim16_words`, `0x0041234Cw`, `0x00420000w`, `0x00460F38w`, `ms0`] mp_tac startup_to_cake_main_slot \\ simp [shim16_common_words_ok, m1_slot_params] \\ simp [LET_THM])
   \\ rpt conj_tac
   >- (
     (* Conjunct 1: Unconditional real-bits target + ¬Fail for all valid FFI/install interferences *)
@@ -2138,9 +2164,9 @@ Proof
     gen_tac
     \\ qspec_then `inp` strip_assume_tac chunks16_split_tail
     \\ qspecl_then [`ms0`, `<| inputs := chunks16 inp; outputs := []; write_limit := NONE |>`,
-                    `mk_real_ffi_if (noerr_ffi_P tail_bs)`, `forge_real_install_if`]
+                    `mk_real_ffi_if_slot forge_shim16_words 0x0041234Cw 0x00420000w 0x00460F38w (noerr_ffi_P tail_bs)`, `forge_real_install_if`]
          mp_tac forge_compile_exact
-    \\ simp [LET_THM, mk_real_ffi_if_ok]
+    \\ simp [LET_THM, mk_real_ffi_if_slot_ok]
     \\ disch_then (fn th => assume_tac (cj 3 th) \\ mp_tac (cj 4 th))
     \\ disch_then (qx_choosel_then [`ck`, `t`, `ms_end`, `st_end`] (EVERY o map assume_tac o CONJUNCTS))
     \\ qspecl_then [`ck`, `bits_of ms0`, `tail_bs`,
@@ -2241,7 +2267,7 @@ QED
 
 Theorem forge_m1_nonvacuous:
   ∃ms0:arm8_state.
-    forge_elf_loaded code data ms0 ∧
+    forge_slot_loaded forge_shim16_words code data ms0 ∧
     ms0.TCR_EL1.TBI0 ∧
     ¬ms0.TCR_EL1.TBI1 ∧
     ms0.SCTLR_EL1.SA0 ∧
@@ -2249,9 +2275,9 @@ Theorem forge_m1_nonvacuous:
 Proof
   mp_tac counter_compiled \\ strip_tac
   \\ qabbrev_tac `m0 = λa:word64.
-       if FORGE_CAKE_MAIN ≤₊ a ∧ a <₊ FORGE_CB_BEGIN then
+       if FORGE_CAKE_MAIN ≤₊ a ∧ a <₊ 0x0041234Cw then
          EL (w2n (a - FORGE_CAKE_MAIN)) code
-       else if FORGE_CAKE_BITMAPS ≤₊ a ∧ a <₊ FORGE_BM_BUF_END then
+       else if FORGE_CAKE_BITMAPS ≤₊ a ∧ a <₊ 0x00460F38w then
          let off = w2n (a - FORGE_CAKE_BITMAPS) in
          let w : word64 = n2w (EL (off DIV 8) data) in
            if off MOD 8 = 0 then (7 >< 0) w
@@ -2264,14 +2290,14 @@ Proof
            else (63 >< 56) w
        else if FORGE_VENEERS_BASE ≤₊ a ∧ a <₊ FORGE_CAKE_MAIN then
          let off = w2n (a - FORGE_VENEERS_BASE) in
-         let w = EL (off DIV 4) forge_veneers_words in
+         let w = EL (off DIV 4) (forge_slot_veneers 0x0041234Cw 0x00420000w 0x00460F38w) in
            if off MOD 4 = 0 then (7 >< 0) w
            else if off MOD 4 = 1 then (15 >< 8) w
            else if off MOD 4 = 2 then (23 >< 16) w
            else (31 >< 24) w
        else if FORGE_SHIM_BASE ≤₊ a ∧ a <₊ FORGE_SHIM_END then
          let off = w2n (a - FORGE_SHIM_BASE) in
-         let w = EL (off DIV 4) forge_shim_words in
+         let w = EL (off DIV 4) forge_shim16_words in
            if off MOD 4 = 0 then (7 >< 0) w
            else if off MOD 4 = 1 then (15 >< 8) w
            else if off MOD 4 = 2 then (23 >< 16) w
@@ -2285,14 +2311,14 @@ Proof
           exception := NoException;
           PC        := FORGE_SHIM_BASE;
           MEM       := m0 |>`
-  \\ simp [forge_elf_loaded_def, arm8_ok_erase, sp_ok_def]
+  \\ simp [forge_slot_loaded_def, LET_THM, m1_slot_params, FORGE_MAX_CODE_BYTES_def, FORGE_MAX_BITMAP_WORDS_def, arm8_ok_erase, sp_ok_def]
   \\ rpt conj_tac
   >- (simp [FORGE_SHIM_BASE_def] \\ EVAL_TAC)
   >- (simp [FORGE_STACKEND_def] \\ EVAL_TAC)
   >- (
-    simp [shim_loaded_def]
-    \\ `LENGTH forge_veneers_words = 44 ∧ LENGTH forge_shim_words = 80` by
-         simp [forge_veneers_words_def, forge_shim_words_def]
+    simp [shim_loaded_slot_def]
+    \\ `LENGTH (forge_slot_veneers 0x0041234Cw 0x00420000w 0x00460F38w) = 44 ∧ LENGTH forge_shim16_words = 80` by
+         simp [forge_slot_veneers_def, forge_shim16_words_def]
     \\ conj_tac
     >- (
       irule words32_in_mem_pointwise \\ rpt strip_tac \\ fs []
@@ -2317,14 +2343,14 @@ Proof
     \\ `∀j. j < 4 ⇒
           FORGE_SHIM_BASE ≤₊ (FORGE_SHIM_BASE + n2w (4 * i + j)) ∧
           (FORGE_SHIM_BASE + n2w (4 * i + j)) <₊ FORGE_SHIM_END ∧
-          ¬((FORGE_SHIM_BASE + n2w (4 * i + j)) <₊ FORGE_CB_BEGIN) ∧
+          ¬((FORGE_SHIM_BASE + n2w (4 * i + j)) <₊ 0x0041234Cw) ∧
           ¬(FORGE_CAKE_BITMAPS ≤₊ (FORGE_SHIM_BASE + n2w (4 * i + j))) ∧
           ¬((FORGE_SHIM_BASE + n2w (4 * i + j)) <₊ FORGE_CAKE_MAIN) ∧
           w2n ((FORGE_SHIM_BASE + n2w (4 * i + j)) - FORGE_SHIM_BASE) = 4 * i + j` by (
          rpt strip_tac
-         \\ `0x00421000 + (4 * i + j) < 18446744073709551616 ∧ 4 * i + j < 18446744073709551616` by decide_tac
+         \\ `0x00450000 + (4 * i + j) < 18446744073709551616 ∧ 4 * i + j < 18446744073709551616` by decide_tac
          \\ fs [wordsTheory.WORD_ADD_SUB2, w2n_n2w_64]
-         \\ fs [FORGE_SHIM_BASE_def, FORGE_SHIM_END_def, FORGE_CB_BEGIN_def,
+         \\ fs [FORGE_SHIM_BASE_def, FORGE_SHIM_END_def, FORGE_CAKE_MAIN_def,
                 FORGE_CAKE_BITMAPS_def, FORGE_CAKE_MAIN_def, word64_add_lo_ls]
          \\ decide_tac)
     \\ rpt conj_tac
@@ -2339,28 +2365,28 @@ Proof
     \\ `0x004000B0 + i < 18446744073709551616 ∧ i < 18446744073709551616` by decide_tac
     \\ conj_tac
     >- (
-      fs [forge_prog_addresses_def, forge_code_region_def, FORGE_CAKE_MAIN_def, FORGE_CB_END_def,
+      fs [forge_prog_addresses_slot_def, forge_code_region_slot_def, FORGE_CAKE_MAIN_def, FORGE_CAKE_MAIN_def,
           word64_add_lo_ls]
       \\ decide_tac)
     \\ fs [Abbr `m0`, wordsTheory.WORD_ADD_SUB2, w2n_n2w_64]
-    \\ fs [FORGE_CAKE_MAIN_def, FORGE_CB_BEGIN_def, word64_add_lo_ls]
+    \\ fs [FORGE_CAKE_MAIN_def, FORGE_CAKE_MAIN_def, word64_add_lo_ls]
     \\ decide_tac)
   >- (
     rpt strip_tac \\ fs []
     \\ irule dword_bytes_reassemble
     \\ `∀j. j < 8 ⇒
           FORGE_CAKE_BITMAPS ≤₊ (FORGE_CAKE_BITMAPS + n2w (8 * i) + n2w j) ∧
-          (FORGE_CAKE_BITMAPS + n2w (8 * i) + n2w j) <₊ FORGE_BM_BUF_END ∧
-          ¬((FORGE_CAKE_BITMAPS + n2w (8 * i) + n2w j) <₊ FORGE_CB_BEGIN) ∧
+          (FORGE_CAKE_BITMAPS + n2w (8 * i) + n2w j) <₊ 0x00460F38w ∧
+          ¬((FORGE_CAKE_BITMAPS + n2w (8 * i) + n2w j) <₊ 0x0041234Cw) ∧
           w2n ((FORGE_CAKE_BITMAPS + n2w (8 * i) + n2w j) - FORGE_CAKE_BITMAPS) = 8 * i + j` by (
          rpt strip_tac
-         \\ `0x00430018 + (8 * i + j) < 18446744073709551616 ∧ 8 * i + j < 18446744073709551616` by decide_tac
+         \\ `0x00460018 + (8 * i + j) < 18446744073709551616 ∧ 8 * i + j < 18446744073709551616` by decide_tac
          \\ fs [word_add_n2w_n2w, wordsTheory.WORD_ADD_SUB2, w2n_n2w_64]
-         \\ fs [FORGE_CAKE_BITMAPS_def, FORGE_BM_BUF_END_def, FORGE_CB_BEGIN_def, word64_add_lo_ls]
+         \\ fs [FORGE_CAKE_BITMAPS_def, FORGE_CAKE_BITMAPS_def, FORGE_CAKE_MAIN_def, word64_add_lo_ls]
          \\ decide_tac)
     \\ `FORGE_CAKE_BITMAPS ≤₊ (FORGE_CAKE_BITMAPS + n2w (8 * i)) ∧
-        (FORGE_CAKE_BITMAPS + n2w (8 * i)) <₊ FORGE_BM_BUF_END ∧
-        ¬((FORGE_CAKE_BITMAPS + n2w (8 * i)) <₊ FORGE_CB_BEGIN) ∧
+        (FORGE_CAKE_BITMAPS + n2w (8 * i)) <₊ 0x00460F38w ∧
+        ¬((FORGE_CAKE_BITMAPS + n2w (8 * i)) <₊ 0x0041234Cw) ∧
         w2n ((FORGE_CAKE_BITMAPS + n2w (8 * i)) - FORGE_CAKE_BITMAPS) = 8 * i` by (
          first_x_assum (qspec_then `0` mp_tac) \\ simp [])
     \\ rpt conj_tac

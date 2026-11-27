@@ -1,12 +1,13 @@
 /*
- * Forge Milestone 1: Raw Linux AArch64 Syscall & Startup Shim (Zero libc, Zero C stack)
+ * Forge Reusable Runtime: Raw Linux AArch64 16-Byte Frame Syscall & Startup Shim
+ * (Zero libc, Zero C stack, Fixed _start = 0x00450000)
  *
  * Strictly 3 Linux AArch64 syscalls:
  *   __NR_read       = 63 (fd 0, stdin)
  *   __NR_write      = 64 (fd 1, stdout)
  *   __NR_exit_group = 94
  *
- * Register discipline (verified in HOL4 forge_shimProofTheory):
+ * Register discipline (verified in HOL4 runtime/hol4/forge_shimProofScript.sml):
  *   - Leaf stubs use only caller-saved registers x0..x3, x8..x12.
  *   - Callee-saved x19..x28, x29, x30, and SP_EL0 are NEVER modified.
  *   - Total FFI contract: if x3 (alen) < 17, return immediately without touching memory.
@@ -143,14 +144,14 @@ forge_shim_end:
 .p2align 4
 .globl forge_rx_tmp
 forge_rx_tmp:
-    .space  16
+    .space  64
 
 .p2align 16
 .globl forge_heap
 forge_heap:
-    .space  131072
+    .space  262144
 .globl forge_stack
 forge_stack:
-    .space  131072
+    .space  262144
 .globl forge_stackend
 forge_stackend:

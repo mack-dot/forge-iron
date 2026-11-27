@@ -1,4 +1,4 @@
-# Require CAKEMLDIR from the environment (no hardcoded local developer paths).
+# Forge Reusable Runtime HOL4 Holmakefile (zero hardcoded developer paths).
 INCLUDES = $(CAKEMLDIR)/misc \
            $(CAKEMLDIR)/semantics \
            $(CAKEMLDIR)/semantics/ffi \

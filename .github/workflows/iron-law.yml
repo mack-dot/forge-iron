@@ -76,18 +76,27 @@ jobs:
           (cd "$CAKEMLDIR/compiler/backend/arm8/proofs" && Holmake -j 1 arm8_configProofTheory.uo)
           (cd "$CAKEMLDIR/cv_translator" && Holmake -j 1 cake_compile_heap)
           rm -rf "$HOLDIR/.git" "$CAKEMLDIR/.git"
-      - name: Clean all forge_* theories and run Iron Law gate
+      - name: Clean all forge_* theories and run Iron Law gate (M1 Counter + M2 Guardrail)
         run: |
           set -euo pipefail
           export PATH="$HOLDIR/bin:$TOOLCHAIN_ROOT/polyml/bin:$PATH"
           export LD_LIBRARY_PATH="$TOOLCHAIN_ROOT/polyml/lib:${LD_LIBRARY_PATH:-}"
-          (cd kernel/hol4 && Holmake cleanAll)
-          python3 scripts/iron_law.py
-      - name: Run real HOL4 kernel Term.aconv negative controls
+          (cd runtime/hol4 && Holmake cleanAll)
+          (cd kernels/counter/hol4 && Holmake cleanAll)
+          (cd kernels/guardrail/hol4 && Holmake cleanAll)
+          python3 scripts/iron_law.py --manifest kernels/counter/GATE.manifest
+          python3 scripts/iron_law.py --manifest kernels/guardrail/GATE.manifest
+      - name: Run real HOL4 kernel Term.aconv negative controls (M1 + M2)
         run: |
           set -euo pipefail
           export PATH="$HOLDIR/bin:$TOOLCHAIN_ROOT/polyml/bin:$PATH"
           export LD_LIBRARY_PATH="$TOOLCHAIN_ROOT/polyml/lib:${LD_LIBRARY_PATH:-}"
           python3 scripts/tests/test_hol_audit_real.py
-      - name: Run ARM64 black-box smoke suite under QEMU
-        run: python3 scripts/smoke_m1.py --qemu qemu-aarch64-static kernel/build/forge-kernel
+      - name: Run ARM64 black-box smoke suites & SDK golden vectors (M1 Counter + M2 Guardrail)
+        run: |
+          set -euo pipefail
+          export PATH="$HOLDIR/bin:$TOOLCHAIN_ROOT/polyml/bin:$PATH"
+          export LD_LIBRARY_PATH="$TOOLCHAIN_ROOT/polyml/lib:${LD_LIBRARY_PATH:-}"
+          python3 sdk/guardrail/test_golden_vectors.py
+          python3 scripts/smoke_m1.py --qemu qemu-aarch64-static kernels/counter/build/forge-kernel
+          python3 scripts/smoke_m2.py --qemu qemu-aarch64-static kernels/guardrail/build/forge-kernel

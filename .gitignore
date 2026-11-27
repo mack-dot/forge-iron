@@ -1,5 +1,6 @@
 .hol/
 *.dumpedheap
+*.heap
 *Theory.sml
 *Theory.sig
 *Theory.dat
@@ -8,6 +9,9 @@
 *Script.ui
 *Script.uo
 kernel/hol4/counter_arm8.S
+kernels/*/hol4/*_arm8.S
 kernel/build/*.o
+kernels/*/build/*.o
+kernels/*/build/cake_pp.s
 __pycache__/
 *.pyc
