@@ -14,11 +14,11 @@
 Theory forge_arm8Erasure
 Ancestors
   words arm8 arm8_step targetSem arm8_target arm8_targetProof asmProps alignment
-  state_transformer bitstring forge_contractSpec
+  state_transformer bitstring forge_runtimeSpec
 Libs
   preamble wordsLib blastLib bitstringLib arm8_targetProofLib
 
-(* ---- Definitions (core erase/bits_of/restore/untagged/sp_ok/lo55/arm8_target_real/real_mc are pinned in forge_contractSpec) ---- *)
+(* ---- Definitions (core erase/bits_of/restore/untagged/sp_ok/lo55/arm8_target_real/real_mc are pinned in forge_runtimeSpec) ---- *)
 
 Definition tbi_pc_def:
   tbi_pc (tcr:TCR_EL1) (t:word64) =

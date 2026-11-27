@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""CLI client for the persistent warm HOL4 goal server (`scripts/hol_repl.py`).
+
+Usage:
+  scripts/holctl start [--heap PATH] [--cwd DIR]
+  scripts/holctl status
+  scripts/holctl stop
+  scripts/holctl eval '<sml>' [--timeout 30]
+  scripts/holctl goal '<hol term>'
+  scripts/holctl step '<tactic>' [--timeout 5.0]
+  scripts/holctl back
+  scripts/holctl show
+  scripts/holctl reset
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DAEMON = Path(__file__).resolve().parent / "hol_repl.py"
+DEFAULT_SOCK = os.environ.get("FORGE_HOL_SOCK", f"/tmp/forge-hol-repl-{os.getuid()}.sock")
+
+
+def send_req(sock_path: str, req: dict, read_timeout: float = 120.0) -> dict:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(read_timeout)
+    s.connect(sock_path)
+    try:
+        s.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        buf = bytearray()
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if b"\n" in chunk:
+                break
+        if not buf:
+            return {"status": "error", "output": "empty response from daemon"}
+        return json.loads(buf.decode("utf-8").splitlines()[0])
+    finally:
+        s.close()
+
+
+def is_running(sock_path: str) -> bool:
+    if not Path(sock_path).exists():
+        return False
+    try:
+        r = send_req(sock_path, {"cmd": "ping"}, read_timeout=3.0)
+        return r.get("status") == "ok" and bool(r.get("alive"))
+    except OSError:
+        return False
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    sock = args.sock
+    if is_running(sock):
+        r = send_req(sock, {"cmd": "ping"})
+        return emit(r, args.json)
+
+    hol_bin = shutil.which(args.hol) if os.sep not in args.hol else args.hol
+    if not hol_bin or not Path(hol_bin).exists():
+        return emit({"status": "error", "output": f"hol binary not found: {args.hol}"}, args.json)
+
+    log_path = Path(f"{sock}.log")
+    cmd = [
+        sys.executable,
+        str(DAEMON),
+        "--sock",
+        sock,
+        "--hol",
+        hol_bin,
+        "--cwd",
+        args.cwd,
+    ]
+    if args.heap is not None:
+        cmd.extend(["--heap", args.heap])
+
+    with log_path.open("wb") as lf:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=lf,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    deadline = time.monotonic() + args.wait
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            err = log_path.read_text(errors="replace")[-800:]
+            return emit(
+                {"status": "error", "output": f"daemon exited early ({proc.returncode}): {err}"},
+                args.json,
+            )
+        if is_running(sock):
+            r = send_req(sock, {"cmd": "ping"})
+            return emit(r, args.json)
+        time.sleep(0.1)
+
+    return emit(
+        {"status": "error", "output": f"timed out waiting for HOL4 daemon on {sock}"},
+        args.json,
+    )
+
+
+def emit(resp: dict, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(resp))
+    else:
+        st = resp.get("status", "error")
+        ms = resp.get("elapsed_ms")
+        header = f"[{st}]" + (f" ({ms:.1f} ms)" if isinstance(ms, (int, float)) else "")
+        print(header)
+        if "output" in resp and resp["output"]:
+            print(resp["output"])
+        elif "goal" in resp:
+            print(f"pid={resp.get('pid')} hol_pid={resp.get('hol_pid')} heap={resp.get('heap')} startup_ms={resp.get('startup_ms')}")
+            if resp["goal"]:
+                print(resp["goal"])
+        elif "pid" in resp:
+            print(f"pid={resp.get('pid')} hol_pid={resp.get('hol_pid')} heap={resp.get('heap')} startup_ms={resp.get('startup_ms')}")
+    return 0 if resp.get("status") == "ok" else (124 if resp.get("status") == "timeout" else 1)
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="holctl", description="Warm HOL4 goal server CLI")
+    p.add_argument("--sock", default=DEFAULT_SOCK, help="Unix socket path")
+    p.add_argument("--json", action="store_true", help="Emit JSON output")
+    sub = p.add_subparsers(dest="sub", required=True)
+
+    ps = sub.add_parser("start", help="Start warm HOL4 daemon")
+    ps.add_argument("--hol", default=os.environ.get("FORGE_HOL_BIN", "hol"))
+    ps.add_argument("--heap", default=None, help="HOL4 heap path (pass '' for default HOL heap)")
+    ps.add_argument("--cwd", default=str(ROOT))
+    ps.add_argument("--wait", type=float, default=60.0)
+
+    sub.add_parser("stop", help="Stop warm HOL4 daemon")
+    sub.add_parser("status", help="Show daemon status and active goal")
+    sub.add_parser("show", help="Show active goal (`p()`)")
+    sub.add_parser("back", help="Undo last tactic (`b()`)")
+    sub.add_parser("reset", help="Drop active goal (`drop()`)")
+
+    pg = sub.add_parser("goal", help="Set a new goal (`g`)")
+    pg.add_argument("term", help="HOL4 goal term")
+
+    pt = sub.add_parser("step", help="Apply a tactic (`e`) with TimeLimit")
+    pt.add_argument("tactic", help="HOL4 tactic expression")
+    pt.add_argument("--timeout", type=float, default=5.0)
+
+    pe = sub.add_parser("eval", help="Evaluate raw SML in the warm HOL4 session")
+    pe.add_argument("sml", help="SML code")
+    pe.add_argument("--timeout", type=float, default=30.0)
+
+    args = p.parse_args(argv)
+    if args.sub == "start":
+        return cmd_start(args)
+
+    if not Path(args.sock).exists():
+        return emit({"status": "error", "output": f"daemon not running (no socket {args.sock})"}, args.json)
+
+    try:
+        if args.sub in ("stop", "status", "show", "back", "reset"):
+            resp = send_req(args.sock, {"cmd": args.sub})
+        elif args.sub == "goal":
+            resp = send_req(args.sock, {"cmd": "goal", "term": args.term})
+        elif args.sub == "step":
+            resp = send_req(
+                args.sock,
+                {"cmd": "step", "tactic": args.tactic, "timeout": args.timeout},
+                read_timeout=args.timeout + 15.0,
+            )
+        elif args.sub == "eval":
+            resp = send_req(
+                args.sock,
+                {"cmd": "eval", "sml": args.sml, "timeout": args.timeout},
+                read_timeout=args.timeout + 15.0,
+            )
+        else:
+            resp = {"status": "error", "output": f"unknown subcommand: {args.sub}"}
+    except OSError as exc:
+        resp = {"status": "error", "output": f"socket error: {exc}"}
+
+    return emit(resp, args.json)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

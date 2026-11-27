@@ -1,0 +1,155 @@
+/*
+ * Forge Reusable Runtime: Raw Linux AArch64 64-Byte Frame Syscall & Startup Shim
+ * (Zero libc, Zero C stack, Fixed _start = 0x00450000)
+ *
+ * Strictly 3 Linux AArch64 syscalls:
+ *   __NR_read       = 63 (fd 0, stdin)
+ *   __NR_write      = 64 (fd 1, stdout)
+ *   __NR_exit_group = 94
+ *
+ * Identical 80-word (320-byte) layout to shim16.S at fixed _start = 0x00450000,
+ * parameterized for 64-byte binary frames (65-byte CakeML FFI buffer: byte 0 = status,
+ * bytes 1..64 = 64-byte frame payload).
+ */
+
+.section .text.shim, "ax", @progbits
+.p2align 2
+
+.globl _start
+.type _start, @function
+_start:
+    adrp    x0, forge_heap
+    add     x0, x0, :lo12:forge_heap
+    adrp    x1, cml_heap
+    add     x1, x1, :lo12:cml_heap
+    str     x0, [x1]
+
+    adrp    x0, forge_stack
+    add     x0, x0, :lo12:forge_stack
+    adrp    x1, cml_stack
+    add     x1, x1, :lo12:cml_stack
+    str     x0, [x1]
+
+    adrp    x0, forge_stackend
+    add     x0, x0, :lo12:forge_stackend
+    adrp    x1, cml_stackend
+    add     x1, x1, :lo12:cml_stackend
+    str     x0, [x1]
+
+    b       cml_main
+.size _start, . - _start
+
+.globl ffirecv64
+.type ffirecv64, @function
+ffirecv64:
+    cmp     x3, #65
+    b.lo    .Lrecv_ret
+    mov     x9, x2
+    adrp    x10, forge_rx_tmp
+    add     x10, x10, :lo12:forge_rx_tmp
+    mov     x11, #64
+.Lrecv_loop:
+    cbz     x11, .Lrecv_ok
+    mov     x0, #0
+    mov     x1, x10
+    mov     x2, x11
+    mov     x8, #63
+    svc     #0
+    cmn     x0, #4
+    b.eq    .Lrecv_loop
+    cmp     x0, #0
+    b.le    .Lrecv_err
+    add     x10, x10, x0
+    sub     x11, x11, x0
+    b       .Lrecv_loop
+.Lrecv_ok:
+    adrp    x12, forge_rx_tmp
+    add     x12, x12, :lo12:forge_rx_tmp
+    mov     x11, #0
+.Lrecv_copy:
+    ldrb    w10, [x12, x11]
+    add     x11, x11, #1
+    strb    w10, [x9, x11]
+    cmp     x11, #64
+    b.lo    .Lrecv_copy
+    strb    wzr, [x9]
+    ret
+.Lrecv_err:
+    mov     w12, #1
+    strb    w12, [x9]
+.Lrecv_ret:
+    ret
+.size ffirecv64, . - ffirecv64
+
+.globl ffisend64
+.type ffisend64, @function
+ffisend64:
+    cmp     x3, #65
+    b.lo    .Lsend_ret
+    mov     x9, x2
+    add     x10, x2, #1
+    mov     x11, #64
+.Lsend_loop:
+    cbz     x11, .Lsend_ok
+    mov     x0, #1
+    mov     x1, x10
+    mov     x2, x11
+    mov     x8, #64
+    svc     #0
+    cmn     x0, #4
+    b.eq    .Lsend_loop
+    cmp     x0, #0
+    b.le    .Lsend_err
+    add     x10, x10, x0
+    sub     x11, x11, x0
+    b       .Lsend_loop
+.Lsend_ok:
+    strb    wzr, [x9]
+    ret
+.Lsend_err:
+    mov     w12, #1
+    strb    w12, [x9]
+.Lsend_ret:
+    ret
+.size ffisend64, . - ffisend64
+
+.globl cml_exit
+.type cml_exit, @function
+cml_exit:
+    cbz     x0, .Lexit_go
+    mov     x0, #1
+.Lexit_go:
+    mov     x8, #94
+    svc     #0
+.Lexit_trap:
+    b       .Lexit_trap
+.size cml_exit, . - cml_exit
+
+.globl cml_install
+.type cml_install, @function
+cml_install:
+    mov     x0, #2
+    mov     x8, #94
+    svc     #0
+.Linst_trap:
+    b       .Linst_trap
+.size cml_install, . - cml_install
+
+.globl forge_shim_end
+forge_shim_end:
+
+.section .bss
+.p2align 4
+.globl forge_rx_tmp
+forge_rx_tmp:
+    .space  64
+
+.p2align 16
+.globl forge_heap
+forge_heap:
+    .space  262144
+.globl forge_stack
+forge_stack:
+    .space  262144
+.globl forge_stackend
+forge_stackend:

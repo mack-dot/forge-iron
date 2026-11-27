@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Negative controls for the Iron Law gate (41 cases: 12 original + 29 M1/Pass-1/Catalog controls).
+"""Negative controls for the Iron Law gate (53 cases: 12 original + 41 M1/M2/Hardening controls).
 
 Each case builds a scratch repository with a synthetic valid static AArch64 ELF64,
 pinned spec SHA-256 files, verified theorem catalog, and fake Holmake/hol tools
@@ -45,7 +45,9 @@ MANIFEST = (
 )
 
 SPEC_COUNTER_TEXT = "Theory forge_counterSpec\nDefinition counter_run_def: counter_run x = x End\n"
+SPEC_GUARDRAIL_TEXT = "Theory forge_guardrailSpec\nDefinition gr_step_def: gr_step x = x End\n"
 SPEC_CONTRACT_TEXT = "Theory forge_contractSpec\nDefinition forge_elf_loaded_def: forge_elf_loaded x = T End\n"
+SPEC_FRAME64_TEXT = "Theory forge_frame64Spec\nDefinition frame64_run_def: frame64_run x = x End\n"
 GOOD_CATALOG_TEXT = "# Verified Theorem Catalog\n\nSynthetic catalog for gate self-test.\n"
 
 
@@ -58,6 +60,7 @@ def default_layout(
     pad_len: int = len(SYN_PAD),
     shim_len: int = len(SYN_SHIM),
     data_len: int = len(SYN_DATA),
+    frame_bytes: int = 16,
 ) -> dict[str, int]:
     c_main = x_vaddr + veneers_len
     cb_begin = c_main + code_len
@@ -95,6 +98,7 @@ def default_layout(
         "forge_heap": heap,
         "forge_stack": stk,
         "forge_stackend": stk_end,
+        "frame_bytes": frame_bytes,
     }
 
 
@@ -115,6 +119,7 @@ def make_synthetic_elf(
     high_entry: bool = False,
     x_vaddr_override: int | None = None,
     rw_memsz_override: int | None = None,
+    frame_bytes: int = 16,
 ) -> bytes:
     x_vaddr = x_vaddr_override if x_vaddr_override is not None else ((1 << 55) if high_entry else 0x00400000)
     d_vaddr = (1 << 55) if high_vaddr else (x_vaddr + 0x10000)
@@ -126,6 +131,7 @@ def make_synthetic_elf(
         pad_len=len(pad),
         shim_len=len(shim),
         data_len=len(data_words),
+        frame_bytes=frame_bytes,
     )
 
     exec_blob = veneers + code + pad + shim
@@ -147,8 +153,8 @@ def make_synthetic_elf(
         ("cake_codebuffer_begin", lay["cb_begin"]),
         ("cake_codebuffer_end", lay["cb_end"]),
         ("_start", lay["shim_base"]),
-        ("ffirecv16", lay["ffirecv16"]),
-        ("ffisend16", lay["ffisend16"]),
+        (f"ffirecv{frame_bytes}", lay["ffirecv16"]),
+        (f"ffisend{frame_bytes}", lay["ffisend16"]),
         ("cml_exit", lay["cml_exit"]),
         ("cml_install", lay["cml_install"]),
         ("forge_shim_end", lay["shim_end"]),
@@ -264,21 +270,36 @@ def make_repo(
     catalog_text: str = GOOD_CATALOG_TEXT,
     catalog_export_exit: int = 0,
     catalog_export_stdout: str = "CATALOG_EXPORT_OK\n",
+    create_runtime_dir: bool = False,
+    runtime_holmake_exit: int = 0,
 ) -> Path:
     (d / "kernel/proof").mkdir(parents=True)
     (d / "kernel/build").mkdir(parents=True)
     (d / "spec-compiler").mkdir(parents=True)
     (d / "docs").mkdir(parents=True)
+    if create_runtime_dir:
+        (d / "runtime/hol4").mkdir(parents=True)
+        (d / "runtime/hol4/Holmakefile").write_text("INCLUDES = $(CAKEMLDIR)/misc\n")
+        (d / "runtime/hol4/forge_runtimeSpecScript.sml").write_text(SPEC_CONTRACT_TEXT)
+        (d / "runtime/hol4/forge_frame64SpecScript.sml").write_text(SPEC_FRAME64_TEXT)
     if manifest is not None:
         (d / "kernel/GATE.manifest").write_text(manifest)
     if write_catalog:
         (d / "docs/THEOREM_CATALOG.md").write_text(catalog_text)
     (d / "kernel/proof/counterScript.sml").write_text(script_text)
     (d / "kernel/proof/forge_counterSpecScript.sml").write_text(spec_counter_text)
+    (d / "kernel/proof/forge_guardrailSpecScript.sml").write_text(SPEC_GUARDRAIL_TEXT)
     (d / "kernel/proof/forge_contractSpecScript.sml").write_text(spec_contract_text)
     if write_spec_hashes:
         if spec_hashes_override is not None:
             (d / "kernel/SPEC_HASHES.sha256").write_text(spec_hashes_override)
+        elif create_runtime_dir and manifest is not None and "contract_theory=forge_runtimeSpec" in manifest:
+            h1 = hashlib.sha256(SPEC_COUNTER_TEXT.encode()).hexdigest()
+            h2 = hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()
+            (d / "kernel/SPEC_HASHES.sha256").write_text(
+                f"{h1}  kernel/proof/forge_counterSpecScript.sml\n"
+                f"{h2}  runtime/hol4/forge_runtimeSpecScript.sml\n"
+            )
         else:
             h1 = hashlib.sha256(SPEC_COUNTER_TEXT.encode()).hexdigest()
             h2 = hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()
@@ -302,6 +323,7 @@ def make_repo(
     body = "#!/bin/sh\n"
     if check_holmake_flags:
         body += 'if [ "$*" != "--qof -j 1 --no_prereqs" ]; then echo "BAD_FLAGS:$*" >&2; exit 99; fi\n'
+    body += f'case "$PWD" in */runtime/hol4) exit {runtime_holmake_exit} ;; esac\n'
     if write_hash:
         body += f"printf '%s\\n' '{h_val}' > ../build/machine_bytes_hash.txt\n"
     body += f"exit {holmake_exit}\n"
@@ -395,6 +417,125 @@ CASES = [
     ("reject: missing docs/THEOREM_CATALOG.md", {"write_catalog": False}, True, 1, "THEOREM_CATALOG_MISSING"),
     ("reject: stale or hand-edited docs/THEOREM_CATALOG.md", {"catalog_text": GOOD_CATALOG_TEXT + "hand-edited claim\n"}, True, 1, "THEOREM_CATALOG_MISMATCH"),
     ("reject: theorem catalog exporter fails", {"catalog_export_exit": 1, "catalog_export_stdout": "CATALOG_EXPORT_FAIL: bad tag\n"}, True, 1, "CATALOG_EXPORT_FAILED"),
+    # M2 Frozen 256 KB Runtime Slot, 64-byte ABI & Hardened Spec/Layout Controls (12 cases: 2 accept + 10 planted failures)
+    (
+        "accept: frozen runtime_holmake_dir manifest passes",
+        {
+            "manifest": MANIFEST.replace("contract_theory=forge_contractSpec", "contract_theory=forge_runtimeSpec")
+            + "runtime_holmake_dir=runtime/hol4\n",
+            "create_runtime_dir": True,
+        },
+        True,
+        0,
+        "end_to_end=true",
+    ),
+    (
+        "reject: missing runtime_holmake_dir directory",
+        {
+            "manifest": MANIFEST.replace("contract_theory=forge_contractSpec", "contract_theory=forge_runtimeSpec")
+            + "runtime_holmake_dir=runtime/hol4\n",
+            "create_runtime_dir": False,
+        },
+        True,
+        1,
+        "RUNTIME_HOLMAKE_DIR_MISSING",
+    ),
+    (
+        "reject: runtime Holmake fails",
+        {
+            "manifest": MANIFEST.replace("contract_theory=forge_contractSpec", "contract_theory=forge_runtimeSpec")
+            + "runtime_holmake_dir=runtime/hol4\n",
+            "create_runtime_dir": True,
+            "runtime_holmake_exit": 3,
+        },
+        True,
+        1,
+        "RUNTIME_HOLMAKE_FAILED",
+    ),
+    (
+        "reject: code exceeds 256 KB RX slot (cb_end > slot_end)",
+        {"layout_text": format_layout({**default_layout(), "slot_end": 4194308})},
+        True,
+        1,
+        "LAYOUT_CODE_EXCEEDS_SLOT",
+    ),
+    (
+        "accept: M2 64-byte frame ABI ELF with ffirecv64/ffisend64 passes",
+        {"binary": make_synthetic_elf(frame_bytes=64), "layout_text": format_layout(default_layout(frame_bytes=64))},
+        True,
+        0,
+        "end_to_end=true",
+    ),
+    (
+        "reject: M2 64-byte layout rejects 16-byte ELF symbols (missing ffirecv64)",
+        {"binary": make_synthetic_elf(frame_bytes=16), "layout_text": format_layout(default_layout(frame_bytes=64))},
+        True,
+        1,
+        "ELF_MISSING_SYMBOLS",
+    ),
+    (
+        "reject: M2 64-byte layout rejects rx_tmp overlapping forge_heap (rx_tmp + 64 > heap)",
+        {
+            "binary": make_synthetic_elf(frame_bytes=64),
+            "layout_text": format_layout({**default_layout(frame_bytes=64), "rx_tmp": default_layout()["forge_heap"] - 32}),
+        },
+        True,
+        1,
+        "ELF_HEAP_BOUNDS_INVALID",
+    ),
+    (
+        "reject: M2 64-byte layout rejects rx_tmp unmapped below RW segment",
+        {
+            "binary": make_synthetic_elf(frame_bytes=64),
+            "layout_text": format_layout({**default_layout(frame_bytes=64), "rx_tmp": 0x00410000 - 32}),
+        },
+        True,
+        1,
+        "ELF_RW_RX_TMP_UNMAPPED",
+    ),
+    (
+        "reject: invalid frame_bytes=32 in theorem_layout.txt",
+        {"layout_text": format_layout(default_layout(frame_bytes=32))},
+        True,
+        1,
+        "LAYOUT_BAD_FRAME_BYTES",
+    ),
+    (
+        "reject: missing frame_bytes key in theorem_layout.txt",
+        {"layout_text": format_layout({k: v for k, v in default_layout().items() if k != "frame_bytes"})},
+        True,
+        1,
+        "LAYOUT_MISSING_KEYS",
+    ),
+    (
+        "reject: SPEC_HASHES.sha256 omits required spec_theory file",
+        {
+            "spec_hashes_override": (
+                f"{hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()}  kernel/proof/forge_contractSpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_GUARDRAIL_TEXT.encode()).hexdigest()}  kernel/proof/forge_guardrailSpecScript.sml\n"
+            )
+        },
+        True,
+        1,
+        "SPEC_HASH_MISSING_REQUIRED",
+    ),
+    (
+        "reject: M2 SPEC_HASHES.sha256 omits forge_frame64SpecScript.sml",
+        {
+            "manifest": MANIFEST.replace("spec_theory=forge_counterSpec", "spec_theory=forge_guardrailSpec").replace(
+                "contract_theory=forge_contractSpec", "contract_theory=forge_runtimeSpec"
+            )
+            + "runtime_holmake_dir=runtime/hol4\n",
+            "create_runtime_dir": True,
+            "spec_hashes_override": (
+                f"{hashlib.sha256(SPEC_GUARDRAIL_TEXT.encode()).hexdigest()}  kernel/proof/forge_guardrailSpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_runtimeSpecScript.sml\n"
+            ),
+        },
+        True,
+        1,
+        "SPEC_HASH_MISSING_REQUIRED (runtime/hol4/forge_frame64SpecScript.sml)",
+    ),
 ]
 
 

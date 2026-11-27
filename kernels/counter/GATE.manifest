@@ -1,0 +1,13 @@
+runtime_holmake_dir=runtime/hol4
+holmake_dir=kernels/counter/hol4
+binary=kernels/counter/build/forge-kernel
+hash_file=kernels/counter/build/machine_bytes_hash.txt
+spec_hashes=kernels/counter/SPEC_HASHES.sha256
+theorem_catalog=docs/THEOREM_CATALOG_M1.md
+audit_theory=forge_m1Kernel
+audit_theorem=forge_m1_kernel_correct
+nonvacuous_theorem=forge_m1_nonvacuous
+spec_theory=forge_counterSpec
+contract_theory=forge_runtimeSpec
+compile_theory=forge_counterCompile
+shim_theory=forge_shimProof

@@ -1,0 +1,40 @@
+{
+  "app": "guardrail",
+  "description": "AI spending & refund guardrail: hard rolling net cap, destination allowlist, strict monotonic nonce, conservation of funds, zero double-refunds, zero u64 overflow",
+  "frame_bytes": 64,
+  "units": "cents_u64 (1 USD = 100)",
+  "zero_amount": "deny_zero (amount == 0 rejected, state unchanged)",
+  "cap_basis": "net_spend (spent - refunded <= cap)",
+  "nonce_rule": "strict_next (req_nonce == last_nonce + 1)",
+  "overflow_rule": "reject_unchanged (checked arithmetic; state never wraps)",
+  "allowlist_rule": "fail_closed_bitmask (dest_id < 64 and bit dest_id set in allowlist_mask)",
+  "refund_rule": "single_tx_final (tx_id == last_tx_id, not yet refunded, amount <= last_tx_amt)",
+  "default_cap_u64": 100000,
+  "default_allowlist_mask_u64": 7,
+  "opcodes": {
+    "BUDGET_SET": 1,
+    "SPEND_REQUEST": 2,
+    "REFUND": 3,
+    "QUERY": 4
+  },
+  "request_lanes_u64": [
+    "op",
+    "agent_id",
+    "dest_id_or_mask",
+    "deposit_or_amount",
+    "cap_or_nonce_or_tx_id",
+    "reserved5",
+    "reserved6",
+    "reserved7"
+  ],
+  "response_lanes_u64": [
+    "ok",
+    "code",
+    "deposits",
+    "balance",
+    "net_spent",
+    "refunds",
+    "last_nonce",
+    "last_tx_id"
+  ]
+}
