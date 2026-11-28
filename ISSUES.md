@@ -27,7 +27,7 @@ This file tracks open and resolved proof, gate, CI, and architecture issues in `
 | ID | Severity | Area | Status | Summary |
 | --- | --- | --- | --- | --- |
 | `ISS-008` | Medium | Governance | Open (Owner action) | Configure GitHub branch protection and required `iron-law` status checks on `main` once Milestone 1 passes hosted CI and merges. |
-| `ISS-009` | Medium | Milestone 2 | Planned | Extend the syscall shim with `pwrite64` and `fdatasync`, and add verified allocation-free SHA-256, HMAC-SHA256, and dual-slot (`Slot A` / `Slot B`) crash recovery. |
+| `ISS-009` | Medium | Milestone 3 | Closed | Extended the ARM64 syscall shim (`runtime/shim/shim_airlock.S`, 672 B) with `pread64(67)`, `pwrite64(68)`, and `fdatasync(83)`; proved pure FIPS 180-4 `SHA-256` / RFC 2104 `HMAC-SHA256` (`forge_sha256Spec`), keyed-HMAC dual-slot (`Slot A`/`Slot B`) crash recovery + capability tokens + idempotent retry (`forge_airlockSpec`), universal 6-syscall shim safety/liveness (`forge_airlockShim*`), and exact `Term.aconv`-pinned `forge_m3_kernel_correct` / `forge_m3_nonvacuous` (`forge_m3Kernel`). Verified via clean `Holmake cleanAll && Holmake --qof -j 1 --no_prereqs` + `scripts/iron_law.py --manifest kernels/airlock/GATE.manifest` (`exit 0`, `end_to_end=true`, `gap_bytes=0`, `19` theories, `350` defs, `577` thms, `HYP_COUNT=0`, `ORACLES=[DISK_THM]`, `4` `bool` axioms), `65/65` `test_iron_law.py`, and `21/21` `test_hol_audit_real.py`. |
 | `ISS-010` | Long-term | TCB Elimination | Planned | Replace the Linux `svc #0` syscall boundary with a verified microkernel (`seL4` / Microkit) and pursue verified hardware execution per `docs/ULTIMATE_PROOF_ROADMAP.md`. |
 
 ## Verification Rule for Closing Issues

@@ -84,7 +84,7 @@ Proof
   \\ impl_tac
   >- (simp [airlock_semantics, FORGE_M3_MAX_CODE_BYTES_def, FORGE_MAX_BITMAP_WORDS_def]
       \\ metis_tac [forge_m3_ffis_eval])
-  \\ simp [airlock_exec_eq_run]
+  \\ disch_then (ACCEPT_TAC o REWRITE_RULE [airlock_exec_eq_run])
 QED
 
 Theorem forge_m3_kernel_correct = cj 1 forge_m3_bundle;
