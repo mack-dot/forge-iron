@@ -13,8 +13,10 @@ if [ "$FRAME_SIZE" = "16" ]; then
   ASM_SHIM="$ROOT/runtime/shim/shim16.S"
 elif [ "$FRAME_SIZE" = "64" ]; then
   ASM_SHIM="$ROOT/runtime/shim/shim64.S"
+elif [ "$FRAME_SIZE" = "airlock" ]; then
+  ASM_SHIM="$ROOT/runtime/shim/shim_airlock.S"
 else
-  echo "error: unsupported frame size '$FRAME_SIZE' (expected 16 or 64)" >&2
+  echo "error: unsupported frame size '$FRAME_SIZE' (expected 16, 64, or airlock)" >&2
   exit 1
 fi
 

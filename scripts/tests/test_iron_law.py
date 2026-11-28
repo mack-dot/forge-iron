@@ -48,6 +48,10 @@ SPEC_COUNTER_TEXT = "Theory forge_counterSpec\nDefinition counter_run_def: count
 SPEC_GUARDRAIL_TEXT = "Theory forge_guardrailSpec\nDefinition gr_step_def: gr_step x = x End\n"
 SPEC_CONTRACT_TEXT = "Theory forge_contractSpec\nDefinition forge_elf_loaded_def: forge_elf_loaded x = T End\n"
 SPEC_FRAME64_TEXT = "Theory forge_frame64Spec\nDefinition frame64_run_def: frame64_run x = x End\n"
+SPEC_AIRLOCK_TEXT = "Theory forge_airlockSpec\nDefinition airlock_run_def: airlock_run k s x = (s, []) End\n"
+SPEC_SHA256_TEXT = "Theory forge_sha256Spec\nDefinition sha256_def: sha256 x = x End\n"
+SPEC_AIRLOCK_FFI_TEXT = "Theory forge_airlockFfi\nDefinition pad512_def: pad512 x = x End\n"
+SPEC_AIRLOCK_CONTRACT_TEXT = "Theory forge_airlockContract\nDefinition forge_m3_slot_loaded_def: forge_m3_slot_loaded c d m = T End\n"
 GOOD_CATALOG_TEXT = "# Verified Theorem Catalog\n\nSynthetic catalog for gate self-test.\n"
 
 
@@ -73,7 +77,7 @@ def default_layout(
     heap = d_vaddr + 0x10000
     stk = heap + 0x10000
     stk_end = stk + 0x10000
-    return {
+    lay = {
         "veneers_base": x_vaddr,
         "ffirecv16_veneer": x_vaddr + 4,
         "ffisend16_veneer": x_vaddr + 8,
@@ -100,6 +104,13 @@ def default_layout(
         "forge_stackend": stk_end,
         "frame_bytes": frame_bytes,
     }
+    if frame_bytes == 128:
+        lay["rx_tmp_bytes"] = 544
+        lay["fficommit_veneer"] = x_vaddr + 4
+        lay["ffibootload_veneer"] = x_vaddr + 8
+        lay["fficommit"] = s_start + 8
+        lay["ffibootload"] = s_start + 12
+    return lay
 
 
 def format_layout(layout: dict[str, int]) -> str:
@@ -145,24 +156,46 @@ def make_synthetic_elf(
     x_off = 0x1000
     d_off = 0x2000
 
-    sym_list = [
-        ("", 0),
-        ("cake_text_begin", lay["veneers_base"]),
-        ("cml_main", lay["veneers_base"]),
-        ("cake_main", lay["cake_main"]),
-        ("cake_codebuffer_begin", lay["cb_begin"]),
-        ("cake_codebuffer_end", lay["cb_end"]),
-        ("_start", lay["shim_base"]),
-        (f"ffirecv{frame_bytes}", lay["ffirecv16"]),
-        (f"ffisend{frame_bytes}", lay["ffisend16"]),
-        ("cml_exit", lay["cml_exit"]),
-        ("cml_install", lay["cml_install"]),
-        ("forge_shim_end", lay["shim_end"]),
-        ("cake_bitmaps", lay["cake_bitmaps"]),
-        ("forge_heap", lay["forge_heap"]),
-        ("forge_stack", lay["forge_stack"]),
-        ("forge_stackend", lay["forge_stackend"]),
-    ]
+    if frame_bytes == 128:
+        sym_list = [
+            ("", 0),
+            ("cake_text_begin", lay["veneers_base"]),
+            ("cml_main", lay["veneers_base"]),
+            ("cake_main", lay["cake_main"]),
+            ("cake_codebuffer_begin", lay["cb_begin"]),
+            ("cake_codebuffer_end", lay["cb_end"]),
+            ("_start", lay["shim_base"]),
+            ("ffirecv64", lay["ffirecv16"]),
+            ("ffisend128", lay["ffisend16"]),
+            ("fficommit", lay["fficommit"]),
+            ("ffibootload", lay["ffibootload"]),
+            ("cml_exit", lay["cml_exit"]),
+            ("cml_install", lay["cml_install"]),
+            ("forge_shim_end", lay["shim_end"]),
+            ("cake_bitmaps", lay["cake_bitmaps"]),
+            ("forge_heap", lay["forge_heap"]),
+            ("forge_stack", lay["forge_stack"]),
+            ("forge_stackend", lay["forge_stackend"]),
+        ]
+    else:
+        sym_list = [
+            ("", 0),
+            ("cake_text_begin", lay["veneers_base"]),
+            ("cml_main", lay["veneers_base"]),
+            ("cake_main", lay["cake_main"]),
+            ("cake_codebuffer_begin", lay["cb_begin"]),
+            ("cake_codebuffer_end", lay["cb_end"]),
+            ("_start", lay["shim_base"]),
+            (f"ffirecv{frame_bytes}", lay["ffirecv16"]),
+            (f"ffisend{frame_bytes}", lay["ffisend16"]),
+            ("cml_exit", lay["cml_exit"]),
+            ("cml_install", lay["cml_install"]),
+            ("forge_shim_end", lay["shim_end"]),
+            ("cake_bitmaps", lay["cake_bitmaps"]),
+            ("forge_heap", lay["forge_heap"]),
+            ("forge_stack", lay["forge_stack"]),
+            ("forge_stackend", lay["forge_stackend"]),
+        ]
 
     strtab = bytearray(b"\x00")
     symtab = bytearray()
@@ -282,6 +315,9 @@ def make_repo(
         (d / "runtime/hol4/Holmakefile").write_text("INCLUDES = $(CAKEMLDIR)/misc\n")
         (d / "runtime/hol4/forge_runtimeSpecScript.sml").write_text(SPEC_CONTRACT_TEXT)
         (d / "runtime/hol4/forge_frame64SpecScript.sml").write_text(SPEC_FRAME64_TEXT)
+        (d / "runtime/hol4/forge_sha256SpecScript.sml").write_text(SPEC_SHA256_TEXT)
+        (d / "runtime/hol4/forge_airlockFfiScript.sml").write_text(SPEC_AIRLOCK_FFI_TEXT)
+        (d / "runtime/hol4/forge_airlockContractScript.sml").write_text(SPEC_AIRLOCK_CONTRACT_TEXT)
     if manifest is not None:
         (d / "kernel/GATE.manifest").write_text(manifest)
     if write_catalog:
@@ -289,6 +325,7 @@ def make_repo(
     (d / "kernel/proof/counterScript.sml").write_text(script_text)
     (d / "kernel/proof/forge_counterSpecScript.sml").write_text(spec_counter_text)
     (d / "kernel/proof/forge_guardrailSpecScript.sml").write_text(SPEC_GUARDRAIL_TEXT)
+    (d / "kernel/proof/forge_airlockSpecScript.sml").write_text(SPEC_AIRLOCK_TEXT)
     (d / "kernel/proof/forge_contractSpecScript.sml").write_text(spec_contract_text)
     if write_spec_hashes:
         if spec_hashes_override is not None:
@@ -535,6 +572,208 @@ CASES = [
         True,
         1,
         "SPEC_HASH_MISSING_REQUIRED (runtime/hol4/forge_frame64SpecScript.sml)",
+    ),
+    # M3 4-FFI Crypto-Airlock ABI, 544B rx_tmp & 6-File Spec-Pinning Controls (12 cases: 1 accept + 11 planted failures)
+    (
+        "accept: M3 128-byte airlock ABI ELF with 4 FFI symbols, 544B rx_tmp, and 6 pinned specs passes",
+        {
+            "manifest": (
+                MANIFEST.replace("spec_theory=forge_counterSpec", "spec_theory=forge_airlockSpec")
+                .replace("contract_theory=forge_contractSpec", "contract_theory=forge_airlockContract")
+                .replace("compile_theory=forge_counterCompile", "compile_theory=forge_airlockCompile")
+                .replace("shim_theory=forge_shimProof", "shim_theory=forge_airlockShimProof")
+                + "runtime_holmake_dir=runtime/hol4\n"
+            ),
+            "create_runtime_dir": True,
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout(default_layout(frame_bytes=128)),
+            "spec_hashes_override": (
+                f"{hashlib.sha256(SPEC_AIRLOCK_TEXT.encode()).hexdigest()}  kernel/proof/forge_airlockSpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_SHA256_TEXT.encode()).hexdigest()}  runtime/hol4/forge_sha256SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_FFI_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockFfiScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockContractScript.sml\n"
+                f"{hashlib.sha256(SPEC_FRAME64_TEXT.encode()).hexdigest()}  runtime/hol4/forge_frame64SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_runtimeSpecScript.sml\n"
+            ),
+        },
+        True,
+        0,
+        "end_to_end=true",
+    ),
+    (
+        "reject: M3 SPEC_HASHES.sha256 omits forge_sha256SpecScript.sml",
+        {
+            "manifest": (
+                MANIFEST.replace("spec_theory=forge_counterSpec", "spec_theory=forge_airlockSpec")
+                .replace("contract_theory=forge_contractSpec", "contract_theory=forge_airlockContract")
+                + "runtime_holmake_dir=runtime/hol4\n"
+            ),
+            "create_runtime_dir": True,
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout(default_layout(frame_bytes=128)),
+            "spec_hashes_override": (
+                f"{hashlib.sha256(SPEC_AIRLOCK_TEXT.encode()).hexdigest()}  kernel/proof/forge_airlockSpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_FFI_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockFfiScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockContractScript.sml\n"
+                f"{hashlib.sha256(SPEC_FRAME64_TEXT.encode()).hexdigest()}  runtime/hol4/forge_frame64SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_runtimeSpecScript.sml\n"
+            ),
+        },
+        True,
+        1,
+        "SPEC_HASH_MISSING_REQUIRED (runtime/hol4/forge_sha256SpecScript.sml)",
+    ),
+    (
+        "reject: M3 SPEC_HASHES.sha256 omits forge_airlockFfiScript.sml",
+        {
+            "manifest": (
+                MANIFEST.replace("spec_theory=forge_counterSpec", "spec_theory=forge_airlockSpec")
+                .replace("contract_theory=forge_contractSpec", "contract_theory=forge_airlockContract")
+                + "runtime_holmake_dir=runtime/hol4\n"
+            ),
+            "create_runtime_dir": True,
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout(default_layout(frame_bytes=128)),
+            "spec_hashes_override": (
+                f"{hashlib.sha256(SPEC_AIRLOCK_TEXT.encode()).hexdigest()}  kernel/proof/forge_airlockSpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_SHA256_TEXT.encode()).hexdigest()}  runtime/hol4/forge_sha256SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockContractScript.sml\n"
+                f"{hashlib.sha256(SPEC_FRAME64_TEXT.encode()).hexdigest()}  runtime/hol4/forge_frame64SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_runtimeSpecScript.sml\n"
+            ),
+        },
+        True,
+        1,
+        "SPEC_HASH_MISSING_REQUIRED (runtime/hol4/forge_airlockFfiScript.sml)",
+    ),
+    (
+        "reject: M3 SPEC_HASHES.sha256 omits forge_airlockContractScript.sml",
+        {
+            "manifest": (
+                MANIFEST.replace("spec_theory=forge_counterSpec", "spec_theory=forge_airlockSpec")
+                .replace("contract_theory=forge_contractSpec", "contract_theory=forge_airlockContract")
+                + "runtime_holmake_dir=runtime/hol4\n"
+            ),
+            "create_runtime_dir": True,
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout(default_layout(frame_bytes=128)),
+            "spec_hashes_override": (
+                f"{hashlib.sha256(SPEC_AIRLOCK_TEXT.encode()).hexdigest()}  kernel/proof/forge_airlockSpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_SHA256_TEXT.encode()).hexdigest()}  runtime/hol4/forge_sha256SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_FFI_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockFfiScript.sml\n"
+                f"{hashlib.sha256(SPEC_FRAME64_TEXT.encode()).hexdigest()}  runtime/hol4/forge_frame64SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_runtimeSpecScript.sml\n"
+            ),
+        },
+        True,
+        1,
+        "SPEC_HASH_MISSING_REQUIRED (runtime/hol4/forge_airlockContractScript.sml)",
+    ),
+    (
+        "reject: M3 SPEC_HASHES.sha256 omits forge_frame64SpecScript.sml",
+        {
+            "manifest": (
+                MANIFEST.replace("spec_theory=forge_counterSpec", "spec_theory=forge_airlockSpec")
+                .replace("contract_theory=forge_contractSpec", "contract_theory=forge_airlockContract")
+                + "runtime_holmake_dir=runtime/hol4\n"
+            ),
+            "create_runtime_dir": True,
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout(default_layout(frame_bytes=128)),
+            "spec_hashes_override": (
+                f"{hashlib.sha256(SPEC_AIRLOCK_TEXT.encode()).hexdigest()}  kernel/proof/forge_airlockSpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_SHA256_TEXT.encode()).hexdigest()}  runtime/hol4/forge_sha256SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_FFI_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockFfiScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockContractScript.sml\n"
+                f"{hashlib.sha256(SPEC_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_runtimeSpecScript.sml\n"
+            ),
+        },
+        True,
+        1,
+        "SPEC_HASH_MISSING_REQUIRED (runtime/hol4/forge_frame64SpecScript.sml)",
+    ),
+    (
+        "reject: M3 SPEC_HASHES.sha256 omits forge_runtimeSpecScript.sml",
+        {
+            "manifest": (
+                MANIFEST.replace("spec_theory=forge_counterSpec", "spec_theory=forge_airlockSpec")
+                .replace("contract_theory=forge_contractSpec", "contract_theory=forge_airlockContract")
+                + "runtime_holmake_dir=runtime/hol4\n"
+            ),
+            "create_runtime_dir": True,
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout(default_layout(frame_bytes=128)),
+            "spec_hashes_override": (
+                f"{hashlib.sha256(SPEC_AIRLOCK_TEXT.encode()).hexdigest()}  kernel/proof/forge_airlockSpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_SHA256_TEXT.encode()).hexdigest()}  runtime/hol4/forge_sha256SpecScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_FFI_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockFfiScript.sml\n"
+                f"{hashlib.sha256(SPEC_AIRLOCK_CONTRACT_TEXT.encode()).hexdigest()}  runtime/hol4/forge_airlockContractScript.sml\n"
+                f"{hashlib.sha256(SPEC_FRAME64_TEXT.encode()).hexdigest()}  runtime/hol4/forge_frame64SpecScript.sml\n"
+            ),
+        },
+        True,
+        1,
+        "SPEC_HASH_MISSING_REQUIRED (runtime/hol4/forge_runtimeSpecScript.sml)",
+    ),
+    (
+        "reject: M3 128-byte layout rejects 64-byte ELF missing fficommit/ffibootload/ffisend128",
+        {
+            "binary": make_synthetic_elf(frame_bytes=64),
+            "layout_text": format_layout(default_layout(frame_bytes=128)),
+        },
+        True,
+        1,
+        "ELF_MISSING_SYMBOLS",
+    ),
+    (
+        "reject: M3 128-byte layout missing rx_tmp_bytes/fficommit keys",
+        {
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout({k: v for k, v in default_layout(frame_bytes=128).items() if k != "rx_tmp_bytes"}),
+        },
+        True,
+        1,
+        "LAYOUT_MISSING_KEYS",
+    ),
+    (
+        "reject: M3 128-byte layout wrong rx_tmp_bytes=64 (expected 544)",
+        {
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout({**default_layout(frame_bytes=128), "rx_tmp_bytes": 64}),
+        },
+        True,
+        1,
+        "LAYOUT_BAD_RX_TMP_BYTES",
+    ),
+    (
+        "reject: M3 128-byte layout rx_tmp + 544 overlaps forge_heap",
+        {
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout({**default_layout(frame_bytes=128), "rx_tmp": default_layout()["forge_heap"] - 256}),
+        },
+        True,
+        1,
+        "ELF_HEAP_BOUNDS_INVALID",
+    ),
+    (
+        "reject: M3 128-byte layout rx_tmp unmapped below RW segment",
+        {
+            "binary": make_synthetic_elf(frame_bytes=128),
+            "layout_text": format_layout({**default_layout(frame_bytes=128), "rx_tmp": 0x00410000 - 64}),
+        },
+        True,
+        1,
+        "ELF_RW_RX_TMP_UNMAPPED",
+    ),
+    (
+        "reject: M3 1-bit flip in airlock shim bytes",
+        {
+            "binary": make_synthetic_elf(frame_bytes=128, shim=flip_bit(SYN_SHIM, 0)),
+            "layout_text": format_layout(default_layout(frame_bytes=128)),
+        },
+        True,
+        1,
+        "SHIM_BYTE_MISMATCH",
     ),
 ]
 

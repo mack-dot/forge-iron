@@ -260,8 +260,18 @@ def verify_kernel_elf(
     stk = layout["forge_stack"]
     stk_end = layout["forge_stackend"]
     frame_bytes = layout["frame_bytes"]
-    if frame_bytes not in (16, 64):
+    if frame_bytes not in (16, 64, 128):
         raise ElfError(f"LAYOUT_BAD_FRAME_BYTES ({frame_bytes})")
+    if frame_bytes == 128:
+        m3_req = ("rx_tmp_bytes", "fficommit_veneer", "ffibootload_veneer", "fficommit", "ffibootload")
+        m3_missing = [k for k in m3_req if k not in layout]
+        if m3_missing:
+            raise ElfError("LAYOUT_MISSING_KEYS (" + ",".join(m3_missing) + ")")
+        rx_tmp_span = layout["rx_tmp_bytes"]
+        if rx_tmp_span != 544:
+            raise ElfError(f"LAYOUT_BAD_RX_TMP_BYTES ({rx_tmp_span})")
+    else:
+        rx_tmp_span = frame_bytes
 
     if not (t_begin < c_main < cb_begin <= cb_end <= s_start < s_end < LO55_LIMIT):
         raise ElfError("LAYOUT_EXEC_ORDER_INVALID")
@@ -332,7 +342,7 @@ def verify_kernel_elf(
             f"ELF_RW_HEAP_UNMAPPED (seg_end=0x{dseg['vaddr']+dseg['memsz']:x} "
             f"need_stackend=0x{stk_end:x})"
         )
-    if dseg["vaddr"] > rx_tmp or dseg["vaddr"] + dseg["memsz"] < rx_tmp + frame_bytes:
+    if dseg["vaddr"] > rx_tmp or dseg["vaddr"] + dseg["memsz"] < rx_tmp + rx_tmp_span:
         raise ElfError(f"ELF_RW_RX_TMP_UNMAPPED (rx_tmp=0x{rx_tmp:x})")
 
     elf_data = read_seg_vaddr(data, dseg, bm_begin, len(theorem_data))
@@ -345,31 +355,52 @@ def verify_kernel_elf(
         raise ElfError("ELF_HEAP_UNALIGNED")
     if not (
         s_end <= cml_heap < bm_begin < bm_end <= rx_tmp
-        and rx_tmp + frame_bytes <= heap < stk < stk_end < LO55_LIMIT
+        and rx_tmp + rx_tmp_span <= heap < stk < stk_end < LO55_LIMIT
     ):
         raise ElfError("ELF_HEAP_BOUNDS_INVALID")
     if (stk_end - heap) < 8192:
         raise ElfError("ELF_HEAP_TOO_SMALL")
 
-    recv_sym = f"ffirecv{frame_bytes}"
-    send_sym = f"ffisend{frame_bytes}"
-    sym_bindings = {
-        "cake_text_begin": t_begin,
-        "cml_main": t_begin,
-        "cake_main": c_main,
-        "cake_codebuffer_begin": cb_begin,
-        "cake_codebuffer_end": cb_end,
-        "_start": s_start,
-        recv_sym: layout["ffirecv16"],
-        send_sym: layout["ffisend16"],
-        "cml_exit": layout["cml_exit"],
-        "cml_install": layout["cml_install"],
-        "forge_shim_end": s_end,
-        "cake_bitmaps": bm_begin,
-        "forge_heap": heap,
-        "forge_stack": stk,
-        "forge_stackend": stk_end,
-    }
+    if frame_bytes == 128:
+        sym_bindings = {
+            "cake_text_begin": t_begin,
+            "cml_main": t_begin,
+            "cake_main": c_main,
+            "cake_codebuffer_begin": cb_begin,
+            "cake_codebuffer_end": cb_end,
+            "_start": s_start,
+            "ffirecv64": layout["ffirecv16"],
+            "ffisend128": layout["ffisend16"],
+            "fficommit": layout["fficommit"],
+            "ffibootload": layout["ffibootload"],
+            "cml_exit": layout["cml_exit"],
+            "cml_install": layout["cml_install"],
+            "forge_shim_end": s_end,
+            "cake_bitmaps": bm_begin,
+            "forge_heap": heap,
+            "forge_stack": stk,
+            "forge_stackend": stk_end,
+        }
+    else:
+        recv_sym = f"ffirecv{frame_bytes}"
+        send_sym = f"ffisend{frame_bytes}"
+        sym_bindings = {
+            "cake_text_begin": t_begin,
+            "cml_main": t_begin,
+            "cake_main": c_main,
+            "cake_codebuffer_begin": cb_begin,
+            "cake_codebuffer_end": cb_end,
+            "_start": s_start,
+            recv_sym: layout["ffirecv16"],
+            send_sym: layout["ffisend16"],
+            "cml_exit": layout["cml_exit"],
+            "cml_install": layout["cml_install"],
+            "forge_shim_end": s_end,
+            "cake_bitmaps": bm_begin,
+            "forge_heap": heap,
+            "forge_stack": stk,
+            "forge_stackend": stk_end,
+        }
     missing = [s for s in sym_bindings if s not in syms]
     if missing:
         raise ElfError("ELF_MISSING_SYMBOLS (" + ",".join(missing) + ")")

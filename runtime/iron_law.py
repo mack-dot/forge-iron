@@ -111,6 +111,14 @@ def verify_pinned_specs(
     ]
     if m["spec_theory"] == "forge_guardrailSpec":
         required_targets.append((contract_base / "forge_frame64SpecScript.sml").resolve())
+    elif m["spec_theory"] == "forge_airlockSpec":
+        for extra_spec in (
+            "forge_sha256SpecScript.sml",
+            "forge_airlockFfiScript.sml",
+            "forge_frame64SpecScript.sml",
+            "forge_runtimeSpecScript.sml",
+        ):
+            required_targets.append((contract_base / extra_spec).resolve())
     for req in required_targets:
         if req not in seen:
             rel_req = req.relative_to(root) if root in req.parents else req

@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 AUDIT_SML = ROOT / "runtime" / "hol_audit.sml"
 HOL_DIR_M1 = ROOT / "kernels" / "counter" / "hol4"
 HOL_DIR_M2 = ROOT / "kernels" / "guardrail" / "hol4"
+HOL_DIR_M3 = ROOT / "kernels" / "airlock" / "hol4"
 RT_DIR = ROOT / "runtime" / "hol4"
 
 
@@ -576,6 +577,178 @@ End
 ]
 
 
+M3_CASES = [
+    (
+        "m3_cross_mix_contract",
+        r"""Theory forge_neg_m3_cross_mix_contract
+Ancestors
+  forge_airlockContract
+Libs
+  preamble
+
+Theorem forge_m3_kernel_correct:
+  T
+Proof
+  simp []
+QED
+
+Theorem forge_m3_nonvacuous:
+  T
+Proof
+  simp []
+QED
+""",
+        "UNSUPPORTED_CONTRACT_THEORY: forge_runtimeSpec",
+        {"hol_dir": HOL_DIR_M3, "audit_thm": "forge_m3_kernel_correct", "nonvac_thm": "forge_m3_nonvacuous",
+         "spec_thy": "forge_airlockSpec", "contract_thy": "forge_runtimeSpec",
+         "compile_thy": "forge_airlockCompile", "shim_thy": "forge_airlockShimProof"},
+    ),
+    (
+        "m3_cross_mix_shim",
+        r"""Theory forge_neg_m3_cross_mix_shim
+Ancestors
+  forge_airlockContract
+Libs
+  preamble
+
+Theorem forge_m3_kernel_correct:
+  T
+Proof
+  simp []
+QED
+
+Theorem forge_m3_nonvacuous:
+  T
+Proof
+  simp []
+QED
+""",
+        "UNSUPPORTED_SHIM_THEORY: forge_shimProof",
+        {"hol_dir": HOL_DIR_M3, "audit_thm": "forge_m3_kernel_correct", "nonvac_thm": "forge_m3_nonvacuous",
+         "spec_thy": "forge_airlockSpec", "contract_thy": "forge_airlockContract",
+         "compile_thy": "forge_airlockCompile", "shim_thy": "forge_shimProof"},
+    ),
+    (
+        "m3_cross_mix_m2_contract",
+        r"""Theory forge_neg_m3_cross_mix_m2_contract
+Ancestors
+  forge_airlockContract
+Libs
+  preamble
+
+Theorem forge_m2_kernel_correct:
+  T
+Proof
+  simp []
+QED
+
+Theorem forge_m2_nonvacuous:
+  T
+Proof
+  simp []
+QED
+""",
+        "UNSUPPORTED_CONTRACT_THEORY: forge_airlockContract",
+        {"hol_dir": HOL_DIR_M2, "audit_thm": "forge_m2_kernel_correct", "nonvac_thm": "forge_m2_nonvacuous",
+         "spec_thy": "forge_guardrailSpec", "contract_thy": "forge_airlockContract",
+         "compile_thy": "forge_guardrailCompile", "shim_thy": "forge_shimProof"},
+    ),
+    (
+        "m3_shadow_const",
+        r"""Theory forge_neg_m3_shadow_const
+Ancestors
+  forge_airlockSpec forge_airlockContract forge_airlockCompile targetSem relation alignment arm8
+Libs
+  preamble
+
+Definition airlock_run_def:
+  airlock_run (x:num) = x
+End
+
+Definition forge_m3_slot_loaded_def:
+  forge_m3_slot_loaded (b:word8 list) (d:num list) (m:arm8_state) = T
+End
+
+Theorem forge_m3_nonvacuous:
+  ∃ms0.
+    forge_m3_slot_loaded code data ms0 ∧
+    ms0.TCR_EL1.TBI0 ∧ ¬ms0.TCR_EL1.TBI1 ∧
+    ms0.SCTLR_EL1.SA0 ∧ aligned 4 ms0.SP_EL0
+Proof
+  qexists_tac `(ARB:arm8_state) with <|
+    SCTLR_EL1 := ((ARB:SCTLRType) with SA0 := T);
+    TCR_EL1 := ((ARB:TCR_EL1) with <| TBI0 := T; TBI1 := F |>);
+    SP_EL0 := 0x500000w |>`
+  \\ simp [forge_m3_slot_loaded_def] \\ EVAL_TAC
+QED
+
+Theorem forge_m3_kernel_correct:
+  ∀ms0. forge_m3_slot_loaded code data ms0 ⇒ airlock_run 0 = 0
+Proof
+  simp [airlock_run_def]
+QED
+""",
+        "EXACT_TERM_MISMATCH on forge_neg_m3_shadow_const.forge_m3_kernel_correct",
+        {"hol_dir": HOL_DIR_M3, "audit_thm": "forge_m3_kernel_correct", "nonvac_thm": "forge_m3_nonvacuous",
+         "spec_thy": "forge_airlockSpec", "contract_thy": "forge_airlockContract",
+         "compile_thy": "forge_airlockCompile", "shim_thy": "forge_airlockShimProof"},
+    ),
+    (
+        "m3_weakened_nonvac",
+        r"""Theory forge_neg_m3_weakened_nonvac
+Ancestors
+  forge_m3Kernel forge_airlockSpec forge_airlockContract forge_airlockCompile targetSem relation alignment arm8
+Libs
+  preamble
+
+Theorem forge_m3_nonvacuous:
+  ∃ms0:arm8_state.
+    forge_m3_slot_loaded code data ms0 ∧
+    ms0.TCR_EL1.TBI0 ∧ ¬ms0.TCR_EL1.TBI1 ∧
+    ms0.SCTLR_EL1.SA0
+Proof
+  mp_tac forge_m3KernelTheory.forge_m3_nonvacuous \\ metis_tac []
+QED
+
+Theorem forge_m3_kernel_correct = forge_m3KernelTheory.forge_m3_kernel_correct;
+""",
+        "EXACT_TERM_MISMATCH on forge_neg_m3_weakened_nonvac.forge_m3_nonvacuous",
+        {"hol_dir": HOL_DIR_M3, "audit_thm": "forge_m3_kernel_correct", "nonvac_thm": "forge_m3_nonvacuous",
+         "spec_thy": "forge_airlockSpec", "contract_thy": "forge_airlockContract",
+         "compile_thy": "forge_airlockCompile", "shim_thy": "forge_airlockShimProof"},
+    ),
+    (
+        "m3_weakened_concl",
+        r"""Theory forge_neg_m3_weakened_concl
+Ancestors
+  forge_m3Kernel forge_airlockSpec forge_airlockContract forge_airlockCompile targetSem relation alignment arm8
+Libs
+  preamble
+
+Theorem forge_m3_nonvacuous = forge_m3KernelTheory.forge_m3_nonvacuous;
+
+Theorem forge_m3_kernel_correct:
+  ∀ms0:arm8_state.
+    forge_m3_slot_loaded code data ms0 ⇒
+      (∀os0:m3_os.
+         os0.out = [] ⇒
+         ∃os_f ms_f exit_code.
+           RTC (m3_whole_step F) (os0, ms0) (os_f, ms_f) ∧
+           svc_exit_group_rel exit_code ms_f)
+Proof
+  rpt strip_tac
+  \\ mp_tac forge_m3KernelTheory.forge_m3_kernel_correct
+  \\ disch_then drule \\ simp [LET_THM]
+QED
+""",
+        "EXACT_TERM_MISMATCH on forge_neg_m3_weakened_concl.forge_m3_kernel_correct",
+        {"hol_dir": HOL_DIR_M3, "audit_thm": "forge_m3_kernel_correct", "nonvac_thm": "forge_m3_nonvacuous",
+         "spec_thy": "forge_airlockSpec", "contract_thy": "forge_airlockContract",
+         "compile_thy": "forge_airlockCompile", "shim_thy": "forge_airlockShimProof"},
+    ),
+]
+
+
 def main() -> int:
     hol_bin = shutil.which("hol")
     holmake_bin = shutil.which("Holmake")
@@ -584,12 +757,16 @@ def main() -> int:
         print("FAIL: set PATH (with hol/Holmake) and CAKEMLDIR to run real HOL4 audit negative controls")
         return 1
     bad = 0
-    total = len(CASES) + len(M2_CASES)
+    total = len(CASES) + len(M2_CASES) + len(M3_CASES)
     for name, body, want in CASES:
         ok, info = run_forged_theory(hol_bin, holmake_bin, cakeml_dir, name, body, want)
         bad += not ok
         print(f"{'PASS' if ok else 'FAIL'} hol_audit reject {name}: {info}")
     for name, body, want, kw in M2_CASES:
+        ok, info = run_forged_theory(hol_bin, holmake_bin, cakeml_dir, name, body, want, **kw)
+        bad += not ok
+        print(f"{'PASS' if ok else 'FAIL'} hol_audit reject {name}: {info}")
+    for name, body, want, kw in M3_CASES:
         ok, info = run_forged_theory(hol_bin, holmake_bin, cakeml_dir, name, body, want, **kw)
         bad += not ok
         print(f"{'PASS' if ok else 'FAIL'} hol_audit reject {name}: {info}")

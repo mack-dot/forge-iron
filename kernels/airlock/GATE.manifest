@@ -1,0 +1,13 @@
+runtime_holmake_dir=runtime/hol4
+holmake_dir=kernels/airlock/hol4
+binary=kernels/airlock/build/forge-kernel
+hash_file=kernels/airlock/build/machine_bytes_hash.txt
+spec_hashes=kernels/airlock/SPEC_HASHES.sha256
+theorem_catalog=docs/THEOREM_CATALOG_M3.md
+audit_theory=forge_m3Kernel
+audit_theorem=forge_m3_kernel_correct
+nonvacuous_theorem=forge_m3_nonvacuous
+spec_theory=forge_airlockSpec
+contract_theory=forge_airlockContract
+compile_theory=forge_airlockCompile
+shim_theory=forge_airlockShimProof

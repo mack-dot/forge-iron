@@ -13,7 +13,7 @@ TIMEOUT ?= gtimeout
 BASE_HEAP = $(CAKEMLDIR)/cv_translator/cake_compile_heap
 FACTORY_HEAP = $(CURDIR)/forge_factory.heap
 
-.PHONY: runtime counter guardrail factory-heap test-fast clean-heap
+.PHONY: runtime counter guardrail airlock demo-airlock fuzz-smoke factory-heap test-fast clean-heap
 
 runtime:
 	cd runtime/hol4 && $(TIMEOUT) 1200 $(HOLMAKE) --qof -j 1 --no_prereqs \
@@ -22,13 +22,34 @@ runtime:
 		forge_shimProofTheory.uo \
 		forge_frameRunnerTheory.uo \
 		forge_slotUtilTheory.uo \
-		forge_frame64ComposeTheory.uo
+		forge_frame64ComposeTheory.uo \
+		forge_sha256SpecTheory.uo \
+		forge_airlockFfiTheory.uo \
+		forge_airlockContractTheory.uo \
+		forge_airlockRunnerTheory.uo \
+		forge_airlockShimBaseTheory.uo \
+		forge_m3StepLib.uo \
+		forge_airlockShimStartTheory.uo \
+		forge_airlockShimIoTheory.uo \
+		forge_airlockShimProofTheory.uo \
+		forge_airlockComposeTheory.uo
 
 counter: runtime
 	cd kernels/counter/hol4 && $(TIMEOUT) 900 $(HOLMAKE) --qof -j 1 --no_prereqs
 
 guardrail: runtime
 	cd kernels/guardrail/hol4 && $(TIMEOUT) 900 $(HOLMAKE) --qof -j 1 --no_prereqs
+
+airlock: runtime
+	cd kernels/airlock/hol4 && $(TIMEOUT) 1200 $(HOLMAKE) --qof -j 1 --no_prereqs
+
+demo-airlock:
+	cargo build --release --manifest-path relay/Cargo.toml
+	python3 examples/rogue_agent_airlock/demo_airlock.py
+
+fuzz-smoke:
+	cargo build --release --manifest-path tools/forge-fuzz/Cargo.toml
+	tools/forge-fuzz/target/release/forge-fuzz --mode both --duration 15 --cycles 100
 
 factory-heap: runtime
 	@test -n "$(CAKEMLDIR)" || (echo "error: set CAKEMLDIR" >&2; exit 1)

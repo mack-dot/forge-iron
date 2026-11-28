@@ -1,0 +1,7 @@
+[package]
+name = "forge-relay"
+version = "0.3.0"
+edition = "2021"
+description = "Stateless keyless Ring 1 HMAC-SHA256 capability-token relay for Forge Airlock (zero external dependencies)"
+
+[dependencies]

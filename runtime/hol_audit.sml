@@ -49,23 +49,41 @@ val out_dir           = req_env "FORGE_AUDIT_OUT_DIR";
 
 (* 1. Load pinned spec & compile theories FIRST, BEFORE loading final_thy_name *)
 val _ =
-  if contract_thy_name <> "forge_runtimeSpec" then
+  if contract_thy_name <> "forge_runtimeSpec" andalso contract_thy_name <> "forge_airlockContract" then
     die ("UNSUPPORTED_CONTRACT_THEORY: " ^ contract_thy_name)
-  else if shim_thy_name <> "forge_shimProof" then
+  else if shim_thy_name <> "forge_shimProof" andalso shim_thy_name <> "forge_airlockShimProof" then
     die ("UNSUPPORTED_SHIM_THEORY: " ^ shim_thy_name)
   else ();
 
-val (extra_trusted_thys, shim_words_const_name, shim_words_def_name, frame_bytes_str) =
+val (extra_trusted_thys, shim_thy_def_owner, shim_words_const_name, shim_words_def_name, frame_bytes_str) =
   if spec_thy_name = "forge_counterSpec" then (
-    if compile_thy_name <> "forge_counterCompile" then
+    if contract_thy_name <> "forge_runtimeSpec" then
+      die ("UNSUPPORTED_CONTRACT_THEORY: " ^ contract_thy_name)
+    else if shim_thy_name <> "forge_shimProof" then
+      die ("UNSUPPORTED_SHIM_THEORY: " ^ shim_thy_name)
+    else if compile_thy_name <> "forge_counterCompile" then
       die ("COMPILE_THY_MISMATCH for forge_counterSpec: " ^ compile_thy_name)
     else ();
-    ([], "forge_shim16_words", "forge_shim16_words_def", "16")
+    ([], "forge_runtimeSpec", "forge_shim16_words", "forge_shim16_words_def", "16")
   ) else if spec_thy_name = "forge_guardrailSpec" then (
-    if compile_thy_name <> "forge_guardrailCompile" then
+    if contract_thy_name <> "forge_runtimeSpec" then
+      die ("UNSUPPORTED_CONTRACT_THEORY: " ^ contract_thy_name)
+    else if shim_thy_name <> "forge_shimProof" then
+      die ("UNSUPPORTED_SHIM_THEORY: " ^ shim_thy_name)
+    else if compile_thy_name <> "forge_guardrailCompile" then
       die ("COMPILE_THY_MISMATCH for forge_guardrailSpec: " ^ compile_thy_name)
     else ();
-    (["forge_frame64Spec"], "forge_shim64_words", "forge_shim64_words_def", "64")
+    (["forge_frame64Spec"], "forge_runtimeSpec", "forge_shim64_words", "forge_shim64_words_def", "64")
+  ) else if spec_thy_name = "forge_airlockSpec" then (
+    if contract_thy_name <> "forge_airlockContract" then
+      die ("UNSUPPORTED_CONTRACT_THEORY: " ^ contract_thy_name)
+    else if shim_thy_name <> "forge_airlockShimProof" then
+      die ("UNSUPPORTED_SHIM_THEORY: " ^ shim_thy_name)
+    else if compile_thy_name <> "forge_airlockCompile" then
+      die ("COMPILE_THY_MISMATCH for forge_airlockSpec: " ^ compile_thy_name)
+    else ();
+    (["forge_sha256Spec", "forge_airlockFfi", "forge_frame64Spec", "forge_runtimeSpec"],
+     "forge_airlockContract", "forge_shim_airlock_words", "forge_shim_airlock_words_def", "128")
   ) else
     die ("UNSUPPORTED_SPEC_THEORY: " ^ spec_thy_name);
 
@@ -235,7 +253,7 @@ val (expected_nonvacuous : term, expected_kernel_correct : term) =
                exit_code = 0w ⇒
                  out_f = list$FLAT (pair$SND (pair$SND (forge_counterSpec$counter_run 0w 0w (forge_counterSpec$chunks16 inp)))))``
     )
-  else
+  else if spec_thy_name = "forge_guardrailSpec" then
     (
       ``∃ms0:arm8$arm8_state.
           forge_runtimeSpec$forge_slot_loaded
@@ -290,6 +308,65 @@ val (expected_nonvacuous : term, expected_kernel_correct : term) =
                forge_runtimeSpec$svc_exit_group_rel exit_code ms_f ∧
                exit_code = 0w ⇒
                  out_f = list$FLAT (pair$SND (forge_frame64Spec$frame64_run forge_guardrailSpec$gr_step forge_guardrailSpec$gr_init (forge_frame64Spec$chunks64 inp))))``
+    )
+  else
+    (
+      ``∃ms0:arm8$arm8_state.
+          forge_airlockContract$forge_m3_slot_loaded
+            forge_airlockCompile$code forge_airlockCompile$data ms0 ∧
+          ms0.TCR_EL1.TBI0 ∧
+          ¬ms0.TCR_EL1.TBI1 ∧
+          ms0.SCTLR_EL1.SA0 ∧
+          alignment$aligned 4 ms0.SP_EL0``,
+      ``∀ms0:arm8$arm8_state.
+          forge_airlockContract$forge_m3_slot_loaded
+            forge_airlockCompile$code forge_airlockCompile$data ms0 ⇒
+            let ms1 = arithmetic$FUNPOW arm8$Next 43 ms0 in
+            let cb_end = forge_airlockContract$m3_slot_cb_end (list$LENGTH forge_airlockCompile$code) in
+            let bm_end = forge_runtimeSpec$slot_bm_buf_end (list$LENGTH forge_airlockCompile$data) in
+            let cbsp = forge_airlockContract$m3_slot_cbspace (list$LENGTH forge_airlockCompile$code) in
+            (∀(io:forge_airlockFfi$airlock_io) ffi_if inst_if.
+               io.outputs = [] ∧
+               forge_airlockContract$m3_real_interfer_ok_slot cb_end bm_end cbsp
+                 [ffi$ExtCall «bootload»; ffi$ExtCall «send128»; ffi$ExtCall «recv64»; ffi$ExtCall «commit»]
+                 (forge_runtimeSpec$bits_of ms0) ffi_if inst_if ⇒
+                 let rmc = forge_runtimeSpec$real_mc (forge_runtimeSpec$bits_of ms0)
+                             (forge_airlockContract$forge_m3_mc_slot cb_end bm_end
+                                [ffi$ExtCall «bootload»; ffi$ExtCall «send128»; ffi$ExtCall «recv64»; ffi$ExtCall «commit»]
+                                ffi_if inst_if) in
+                   rmc.target = forge_runtimeSpec$arm8_target_real (forge_runtimeSpec$bits_of ms0) ∧
+                   ¬targetSem$machine_sem rmc (forge_airlockFfi$airlock_ffi io) ms1 ffi$Fail) ∧
+            (∀os0:forge_airlockContract$m3_os.
+               os0.out = [] ⇒
+               ∃os_f ms_f exit_code.
+                 relation$RTC (forge_airlockContract$m3_whole_step F) (os0, ms0) (os_f, ms_f) ∧
+                 forge_runtimeSpec$svc_exit_group_rel exit_code ms_f) ∧
+            (∀(os0:forge_airlockContract$m3_os) os_f ms_f exit_code.
+               os0.out = [] ∧
+               relation$RTC (forge_airlockContract$m3_whole_step T) (os0, ms0) (os_f, ms_f) ∧
+               forge_runtimeSpec$svc_exit_group_rel exit_code ms_f ⇒
+                 (exit_code = 0w ∨ exit_code = 1w ∨ exit_code = 2w) ∧
+                 list$isPREFIX os_f.out
+                   (if 32 ≤ list$LENGTH os0.key_in then
+                      let key = list$TAKE 32 os0.key_in in
+                      let p512 = forge_airlockFfi$pad512 os0.disk in
+                        list$FLAT (pair$SND (forge_airlockSpec$airlock_run key
+                          (forge_airlockSpec$recover_dual_slot key (list$TAKE 256 p512) (list$DROP 256 p512))
+                          (forge_frame64Spec$chunks64 os0.inp)))
+                    else [])) ∧
+            (∀(os0:forge_airlockContract$m3_os) os_f ms_f exit_code.
+               os0.out = [] ∧
+               relation$RTC (forge_airlockContract$m3_whole_step F) (os0, ms0) (os_f, ms_f) ∧
+               forge_runtimeSpec$svc_exit_group_rel exit_code ms_f ∧
+               exit_code = 0w ⇒
+                 os_f.out =
+                   (if 32 ≤ list$LENGTH os0.key_in then
+                      let key = list$TAKE 32 os0.key_in in
+                      let p512 = forge_airlockFfi$pad512 os0.disk in
+                        list$FLAT (pair$SND (forge_airlockSpec$airlock_run key
+                          (forge_airlockSpec$recover_dual_slot key (list$TAKE 256 p512) (list$DROP 256 p512))
+                          (forge_frame64Spec$chunks64 os0.inp)))
+                    else []))``
     );
 
 (* 2b. Validate compile_thy_name defs & decode code/data BEFORE loading final_thy_name *)
@@ -410,47 +487,87 @@ val _ = let
   val _ = write_bin (OS.Path.concat (out_dir, "theorem_code.bin")) code_vec
   val _ = write_bin (OS.Path.concat (out_dir, "theorem_data.bin")) data_vec
 
-  val cb_begin_tm = eval_tm ``forge_runtimeSpec$slot_cb_begin ^code_len_tm``
-  val cb_end_tm   = eval_tm ``forge_runtimeSpec$slot_cb_end ^code_len_tm``
+  val is_m3 = (spec_thy_name = "forge_airlockSpec")
+  val cb_begin_tm =
+    if is_m3 then eval_tm ``forge_airlockContract$m3_slot_cb_begin ^code_len_tm``
+    else eval_tm ``forge_runtimeSpec$slot_cb_begin ^code_len_tm``
+  val cb_end_tm =
+    if is_m3 then eval_tm ``forge_airlockContract$m3_slot_cb_end ^code_len_tm``
+    else eval_tm ``forge_runtimeSpec$slot_cb_end ^code_len_tm``
   val bm_end_tm   = eval_tm ``forge_runtimeSpec$slot_bm_buf_end ^data_words_tm``
-  val cbspace_str = eval_num_tm ``forge_runtimeSpec$slot_cbspace ^code_len_tm``
+  val cbspace_str =
+    if is_m3 then eval_num_tm ``forge_airlockContract$m3_slot_cbspace ^code_len_tm``
+    else eval_num_tm ``forge_runtimeSpec$slot_cbspace ^code_len_tm``
 
-  val veneers_tm = eval_tm ``forge_runtimeSpec$forge_slot_veneers ^cb_begin_tm ^cb_end_tm ^bm_end_tm``
-  val shim_def = DB.fetch "forge_runtimeSpec" shim_words_def_name
-    handle e => die ("missing forge_runtimeSpec." ^ shim_words_def_name)
+  val veneers_tm =
+    if is_m3 then eval_tm ``forge_airlockContract$forge_m3_slot_veneers ^cb_begin_tm ^cb_end_tm ^bm_end_tm``
+    else eval_tm ``forge_runtimeSpec$forge_slot_veneers ^cb_begin_tm ^cb_end_tm ^bm_end_tm``
+  val shim_def = DB.fetch shim_thy_def_owner shim_words_def_name
+    handle e => die ("missing " ^ shim_thy_def_owner ^ "." ^ shim_words_def_name)
   val _ = check_tag shim_words_def_name shim_def
-  val _ = check_def_lhs "SHIM_DEF" "forge_runtimeSpec" shim_words_const_name shim_def
+  val _ = check_def_lhs "SHIM_DEF" shim_thy_def_owner shim_words_const_name shim_def
 
   val veneers_vec = word32_list_to_le_bytes veneers_tm
   val shim_vec = word32_list_to_le_bytes (eval_tm (rhs (concl shim_def)))
   val _ = write_bin (OS.Path.concat (out_dir, "theorem_veneers.bin")) veneers_vec
   val _ = write_bin (OS.Path.concat (out_dir, "theorem_shim.bin")) shim_vec
 
-  val fixed_w64_fields = [
-    ("veneers_base",     "FORGE_VENEERS_BASE",   "FORGE_VENEERS_BASE_def"),
-    ("ffirecv16_veneer", "FORGE_FFIRECV_VENEER", "FORGE_FFIRECV_VENEER_def"),
-    ("ffisend16_veneer", "FORGE_FFISEND_VENEER", "FORGE_FFISEND_VENEER_def"),
-    ("install_veneer",   "FORGE_INSTALL_VENEER", "FORGE_INSTALL_VENEER_def"),
-    ("exit_veneer",      "FORGE_EXIT_VENEER",    "FORGE_EXIT_VENEER_def"),
-    ("cake_main",        "FORGE_CAKE_MAIN",      "FORGE_CAKE_MAIN_def"),
-    ("slot_end",         "FORGE_SLOT_END",       "FORGE_SLOT_END_def"),
-    ("shim_base",        "FORGE_SHIM_BASE",      "FORGE_SHIM_BASE_def"),
-    ("ffirecv16",        "FORGE_FFIRECV",        "FORGE_FFIRECV_def"),
-    ("ffisend16",        "FORGE_FFISEND",        "FORGE_FFISEND_def"),
-    ("cml_exit",         "FORGE_CML_EXIT",       "FORGE_CML_EXIT_def"),
-    ("cml_install",      "FORGE_CML_INSTALL",    "FORGE_CML_INSTALL_def"),
-    ("shim_end",         "FORGE_SHIM_END",       "FORGE_SHIM_END_def"),
-    ("cml_heap",         "FORGE_CML_HEAP",       "FORGE_CML_HEAP_def"),
-    ("cml_stack",        "FORGE_CML_STACK",      "FORGE_CML_STACK_def"),
-    ("cml_stackend",     "FORGE_CML_STACKEND",   "FORGE_CML_STACKEND_def"),
-    ("cake_bitmaps",     "FORGE_CAKE_BITMAPS",   "FORGE_CAKE_BITMAPS_def"),
-    ("rx_tmp",           "FORGE_RX_TMP",         "FORGE_RX_TMP_def"),
-    ("forge_heap",       "FORGE_HEAP",           "FORGE_HEAP_def"),
-    ("forge_stack",      "FORGE_STACK",          "FORGE_STACK_def"),
-    ("forge_stackend",   "FORGE_STACKEND",       "FORGE_STACKEND_def")
-  ]
+  val fixed_w64_fields =
+    if is_m3 then [
+      ("veneers_base",     "forge_airlockContract", "FORGE_M3_VENEERS_BASE",     "FORGE_M3_VENEERS_BASE_def"),
+      ("ffirecv16_veneer", "forge_airlockContract", "FORGE_M3_FFIRECV_VENEER",   "FORGE_M3_FFIRECV_VENEER_def"),
+      ("ffisend16_veneer", "forge_airlockContract", "FORGE_M3_FFISEND_VENEER",   "FORGE_M3_FFISEND_VENEER_def"),
+      ("fficommit_veneer", "forge_airlockContract", "FORGE_M3_FFICOMMIT_VENEER", "FORGE_M3_FFICOMMIT_VENEER_def"),
+      ("ffibootload_veneer","forge_airlockContract","FORGE_M3_FFIBOOT_VENEER",   "FORGE_M3_FFIBOOT_VENEER_def"),
+      ("install_veneer",   "forge_airlockContract", "FORGE_M3_INSTALL_VENEER",   "FORGE_M3_INSTALL_VENEER_def"),
+      ("exit_veneer",      "forge_airlockContract", "FORGE_M3_EXIT_VENEER",      "FORGE_M3_EXIT_VENEER_def"),
+      ("cake_main",        "forge_airlockContract", "FORGE_M3_CAKE_MAIN",        "FORGE_M3_CAKE_MAIN_def"),
+      ("slot_end",         "forge_runtimeSpec",     "FORGE_SLOT_END",            "FORGE_SLOT_END_def"),
+      ("shim_base",        "forge_airlockContract", "FORGE_M3_SHIM_BASE",        "FORGE_M3_SHIM_BASE_def"),
+      ("ffirecv16",        "forge_airlockContract", "FORGE_M3_FFIRECV",          "FORGE_M3_FFIRECV_def"),
+      ("ffisend16",        "forge_airlockContract", "FORGE_M3_FFISEND",          "FORGE_M3_FFISEND_def"),
+      ("fficommit",        "forge_airlockContract", "FORGE_M3_FFICOMMIT",        "FORGE_M3_FFICOMMIT_def"),
+      ("ffibootload",      "forge_airlockContract", "FORGE_M3_FFIBOOT",          "FORGE_M3_FFIBOOT_def"),
+      ("cml_exit",         "forge_airlockContract", "FORGE_M3_CML_EXIT",         "FORGE_M3_CML_EXIT_def"),
+      ("cml_install",      "forge_airlockContract", "FORGE_M3_CML_INSTALL",      "FORGE_M3_CML_INSTALL_def"),
+      ("shim_end",         "forge_airlockContract", "FORGE_M3_SHIM_END",         "FORGE_M3_SHIM_END_def"),
+      ("cml_heap",         "forge_runtimeSpec",     "FORGE_CML_HEAP",            "FORGE_CML_HEAP_def"),
+      ("cml_stack",        "forge_runtimeSpec",     "FORGE_CML_STACK",           "FORGE_CML_STACK_def"),
+      ("cml_stackend",     "forge_runtimeSpec",     "FORGE_CML_STACKEND",        "FORGE_CML_STACKEND_def"),
+      ("cake_bitmaps",     "forge_runtimeSpec",     "FORGE_CAKE_BITMAPS",        "FORGE_CAKE_BITMAPS_def"),
+      ("rx_tmp",           "forge_runtimeSpec",     "FORGE_RX_TMP",              "FORGE_RX_TMP_def"),
+      ("forge_heap",       "forge_runtimeSpec",     "FORGE_HEAP",                "FORGE_HEAP_def"),
+      ("forge_stack",      "forge_runtimeSpec",     "FORGE_STACK",               "FORGE_STACK_def"),
+      ("forge_stackend",   "forge_runtimeSpec",     "FORGE_STACKEND",            "FORGE_STACKEND_def")
+    ] else [
+      ("veneers_base",     "forge_runtimeSpec",     "FORGE_VENEERS_BASE",   "FORGE_VENEERS_BASE_def"),
+      ("ffirecv16_veneer", "forge_runtimeSpec",     "FORGE_FFIRECV_VENEER", "FORGE_FFIRECV_VENEER_def"),
+      ("ffisend16_veneer", "forge_runtimeSpec",     "FORGE_FFISEND_VENEER", "FORGE_FFISEND_VENEER_def"),
+      ("install_veneer",   "forge_runtimeSpec",     "FORGE_INSTALL_VENEER", "FORGE_INSTALL_VENEER_def"),
+      ("exit_veneer",      "forge_runtimeSpec",     "FORGE_EXIT_VENEER",    "FORGE_EXIT_VENEER_def"),
+      ("cake_main",        "forge_runtimeSpec",     "FORGE_CAKE_MAIN",      "FORGE_CAKE_MAIN_def"),
+      ("slot_end",         "forge_runtimeSpec",     "FORGE_SLOT_END",       "FORGE_SLOT_END_def"),
+      ("shim_base",        "forge_runtimeSpec",     "FORGE_SHIM_BASE",      "FORGE_SHIM_BASE_def"),
+      ("ffirecv16",        "forge_runtimeSpec",     "FORGE_FFIRECV",        "FORGE_FFIRECV_def"),
+      ("ffisend16",        "forge_runtimeSpec",     "FORGE_FFISEND",        "FORGE_FFISEND_def"),
+      ("cml_exit",         "forge_runtimeSpec",     "FORGE_CML_EXIT",       "FORGE_CML_EXIT_def"),
+      ("cml_install",      "forge_runtimeSpec",     "FORGE_CML_INSTALL",    "FORGE_CML_INSTALL_def"),
+      ("shim_end",         "forge_runtimeSpec",     "FORGE_SHIM_END",       "FORGE_SHIM_END_def"),
+      ("cml_heap",         "forge_runtimeSpec",     "FORGE_CML_HEAP",       "FORGE_CML_HEAP_def"),
+      ("cml_stack",        "forge_runtimeSpec",     "FORGE_CML_STACK",      "FORGE_CML_STACK_def"),
+      ("cml_stackend",     "forge_runtimeSpec",     "FORGE_CML_STACKEND",   "FORGE_CML_STACKEND_def"),
+      ("cake_bitmaps",     "forge_runtimeSpec",     "FORGE_CAKE_BITMAPS",   "FORGE_CAKE_BITMAPS_def"),
+      ("rx_tmp",           "forge_runtimeSpec",     "FORGE_RX_TMP",         "FORGE_RX_TMP_def"),
+      ("forge_heap",       "forge_runtimeSpec",     "FORGE_HEAP",           "FORGE_HEAP_def"),
+      ("forge_stack",      "forge_runtimeSpec",     "FORGE_STACK",          "FORGE_STACK_def"),
+      ("forge_stackend",   "forge_runtimeSpec",     "FORGE_STACKEND",       "FORGE_STACKEND_def")
+    ]
+  val m3_extra_lines =
+    if is_m3 then ["rx_tmp_bytes=" ^ eval_num_tm ``forge_airlockContract$FORGE_M3_RX_TMP_BYTES`` ^ "\n"]
+    else []
   val layout_lines =
-    map (fn (k, c, d) => k ^ "=" ^ eval_word64_def "forge_runtimeSpec" c d ^ "\n") fixed_w64_fields @
+    map (fn (k, thy, c, d) => k ^ "=" ^ eval_word64_def thy c d ^ "\n") fixed_w64_fields @
+    m3_extra_lines @
     ["cb_begin=" ^ eval_word64_tm cb_begin_tm ^ "\n",
      "cb_end=" ^ eval_word64_tm cb_end_tm ^ "\n",
      "bm_buf_end=" ^ eval_word64_tm bm_end_tm ^ "\n",

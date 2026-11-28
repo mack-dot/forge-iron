@@ -51,8 +51,21 @@ val canonical_order = [
   ("forge_shimProof",        "Frozen 256KB Shim Proof", "Parameterized 43-step ELF startup proof (_start=0x450000) for any <=256KB code blob plus universal 16B & 64B Linux syscall safety and liveness"),
   ("forge_slotUtil",         "Frozen 256KB Slot Util",  "Parameterized slot layout arithmetic, installed proof, and constructive non-vacuity witness for any <=256KB kernel"),
   ("forge_frame64Compose",   "Generic 64B E2E Compose", "Polymorphic whole-binary ARM64 composition theorem lifting any 64-byte ml_translator kernel from _start to exit_group(94)"),
+  ("forge_sha256Spec",       "Verified Crypto (M3)",    "SHA-256 pinned pure FIPS 180-4 SHA-256 and RFC 2104 HMAC-SHA256 specifications verified against official NIST/RFC test vectors"),
+  ("forge_airlockFfi",       "M3 4-FFI Airlock ABI",    "SHA-256 pinned 128-byte response frame bijection, dual-slot airlock_exec trace, and total 4-FFI oracle (bootload/commit/recv64/send128)"),
+  ("forge_airlockContract",  "M3 6-Syscall Contract",   "SHA-256 pinned M3 256 KB RX slot, 52-word veneers, 168-word airlock shim, and 6-syscall Linux AArch64 dual-slot OS contract"),
+  ("forge_airlockSpec",      "Pure Spec (M3)",          "SHA-256 pinned crypto-authenticated crash-atomic airlock spec (keyed-HMAC dual slots, conservation, capability tokens, idempotent retry)"),
+  ("forge_airlockRunner",    "M3 4-FFI ML Runner",      "Polymorphic Zero-Basis CakeML 4-FFI crash-atomic airlock runner (bootload -> recv64 -> step -> commit -> send128) with boot-once invariant"),
+  ("forge_airlockProg",      "Zero-SL CakeML (M3)",     "Automatically ml_translator-synthesized CakeML crypto-airlock program (SHA-256, HMAC-SHA256, dual-slot recovery, guardrail step)"),
+  ("forge_airlockCompile",   "Verified Compilation",    "In-logic ARM64 backend compilation theorem linking airlock_prog to exact machine-code bytes and bitmaps"),
+  ("forge_airlockShimBase",  "M3 256KB Shim Base",      "M3 256 KB slot disjointness, patch_bytes/pad512 laws, 4-FFI machine config, interference lifting, and constructive non-vacuity"),
+  ("forge_airlockShimStart", "M3 Startup & Exit Proof", "43-step ARM64 startup proof (_start=0x450000 -> cake_main=0x4000D0), exact installed proof, and universal exit/install stubs"),
+  ("forge_airlockShimIo",    "M3 I/O Syscall Proofs",   "Universal safety and error-free liveness proofs for raw ARM64 ffirecv64 (fd 0) and ffisend128 (fd 1)"),
+  ("forge_airlockShimProof", "M3 Disk/Boot Proofs",     "Universal safety and liveness proofs for raw ARM64 fficommit (pwrite64 + fdatasync durability) and ffibootload (fd 4 key + fd 3 pread64)"),
+  ("forge_airlockCompose",   "M3 4-FFI E2E Compose",    "Polymorphic whole-binary ARM64 composition theorem lifting any 4-FFI crypto-airlock kernel from _start to exit_group(94)"),
   ("forge_m1Kernel",         "Unified End-to-End (M1)", "Whole-binary ARM64 counter execution theorem from _start (0x450000) to svc #0 exit_group(94) and non-vacuity witness"),
-  ("forge_m2Kernel",         "Unified End-to-End (M2)", "Whole-binary ARM64 guardrail execution theorem from _start (0x450000) to svc #0 exit_group(94) and non-vacuity witness")
+  ("forge_m2Kernel",         "Unified End-to-End (M2)", "Whole-binary ARM64 guardrail execution theorem from _start (0x450000) to svc #0 exit_group(94) and non-vacuity witness"),
+  ("forge_m3Kernel",         "Unified End-to-End (M3)", "Whole-binary ARM64 crypto-airlock execution theorem from _start (0x450000) across 6 Linux syscalls to exit_group(94) and non-vacuity witness")
 ];
 
 fun mem s xs = List.exists (fn x => x = s) xs;
@@ -222,7 +235,23 @@ val crown_jewels = [
   ("Non-Vacuity Witness",     "forge_m1Kernel",         "forge_m1_nonvacuous",                 "Constructive witness exhibiting a concrete Linux EL0 ARM64 state (TBI0=T, TBI1=F, SA0=T, 16B-aligned SP_EL0) satisfying M1 forge_slot_loaded."),
   ("Unified End-to-End (M1)", "forge_m1Kernel",         "forge_m1_kernel_correct",             "Single whole-binary theorem (exact Term.aconv-pinned) connecting fixed _start (0x450000) across RTC whole_step to svc #0 exit_group(94) and counter_run."),
   ("Non-Vacuity Witness",     "forge_m2Kernel",         "forge_m2_nonvacuous",                 "Constructive witness exhibiting a concrete Linux EL0 ARM64 state (TBI0=T, TBI1=F, SA0=T, 16B-aligned SP_EL0) satisfying M2 forge_slot_loaded."),
-  ("Unified End-to-End (M2)", "forge_m2Kernel",         "forge_m2_kernel_correct",             "Single whole-binary theorem (exact Term.aconv-pinned) connecting fixed _start (0x450000) across RTC whole_step to svc #0 exit_group(94) and frame64_run gr_step.")
+  ("Unified End-to-End (M2)", "forge_m2Kernel",         "forge_m2_kernel_correct",             "Single whole-binary theorem (exact Term.aconv-pinned) connecting fixed _start (0x450000) across RTC whole_step to svc #0 exit_group(94) and frame64_run gr_step."),
+  ("Verified Crypto (M3)",    "forge_sha256Spec",       "hmac_sha256_rfc4231_tc1",             "In-logic HOL4 proof verifying pure RFC 2104 HMAC-SHA256 matches official RFC 4231 Test Case 1 byte-for-byte."),
+  ("Pure Spec (M3)",          "forge_airlockSpec",      "dual_slot_crash_recovery",            "Universal dual-slot crash recovery: keyed-HMAC slots recover exact prior state on torn write and exact new state on completed commit."),
+  ("Pure Spec (M3)",          "forge_airlockSpec",      "airlock_run_preserves_inv",           "Exact natural-number fund conservation, rolling cap, and HMAC token invariant across every request stream."),
+  ("Pure Spec (M3)",          "forge_airlockSpec",      "airlock_retry_idempotent",            "Idempotent retry returns the exact cached signed capability token with state unchanged and zero disk commit."),
+  ("Pure Spec (M3)",          "forge_airlockSpec",      "airlock_emitted_token_authentic",     "Every non-zero emitted capability token matches HMAC-SHA256(key, FORGE-CAP-V1 || seq || op || dest || amt || bal)."),
+  ("M3 4-FFI ML Runner",      "forge_airlockRunner",    "run_airlock_kernel_spec",             "Polymorphic CF specification of 4-FFI CakeML airlock runner with boot-once and crash-atomic commit ordering."),
+  ("Zero-SL CakeML (M3)",     "forge_airlockProg",      "airlock_semantics",                   "Automatically ml_translator-synthesized CakeML airlock_prog terminates cleanly and emits exact airlock_exec frames."),
+  ("Verified Compilation",    "forge_airlockCompile",   "airlock_compiled",                    "In-logic CakeML arm8 backend evaluation theorem binding airlock_prog to exact machine-code bytes (code) and bitmaps (data)."),
+  ("M3 Startup & Exit Proof", "forge_airlockShimStart", "m3_startup_to_cake_main_slot",        "43-step ARM64 proof from fixed _start (0x450000) through 52-word veneers to cake_main (0x4000D0)."),
+  ("M3 I/O Syscall Proofs",   "forge_airlockShimIo",    "m3_ffirecv64_universal_slot",         "Universal safety of raw ARM64 ffirecv64 (fd 0) over partial reads, EINTR, truncated EOF, and errors."),
+  ("M3 I/O Syscall Proofs",   "forge_airlockShimIo",    "m3_ffisend128_universal_slot",        "Universal safety of raw ARM64 ffisend128 (fd 1) over partial writes (1..128B), EINTR, and errors."),
+  ("M3 Disk/Boot Proofs",     "forge_airlockShimProof", "m3_fficommit_universal_slot",         "Universal crash-atomic durability proof of raw ARM64 fficommit (pwrite64(68) + fdatasync(83)) on fd 3."),
+  ("M3 Disk/Boot Proofs",     "forge_airlockShimProof", "m3_ffibootload_universal_slot",       "Universal boot proof of raw ARM64 ffibootload (fd 4 32B key + fd 3 512B pread64(67) + zero-fill)."),
+  ("M3 4-FFI E2E Compose",    "forge_airlockCompose",   "forge_airlock_kernel_compose",        "Polymorphic whole-binary composition theorem lifting any 4-FFI crypto-airlock kernel from _start to exit_group(94)."),
+  ("Non-Vacuity Witness",     "forge_m3Kernel",         "forge_m3_nonvacuous",                 "Constructive witness exhibiting a concrete Linux EL0 ARM64 state (TBI0=T, TBI1=F, SA0=T, 16B-aligned SP_EL0) satisfying M3 forge_m3_slot_loaded."),
+  ("Unified End-to-End (M3)", "forge_m3Kernel",         "forge_m3_kernel_correct",             "Single whole-binary theorem (exact Term.aconv-pinned) connecting fixed _start (0x450000) across 6-syscall m3_whole_step to exit_group(94) and keyed airlock_run.")
 ];
 
 val pending_names = map #1 pending_theories;
